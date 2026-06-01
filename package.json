@@ -1,0 +1,75 @@
+{
+  "name": "three-usd-robot",
+  "version": "0.2.0",
+  "description": "Kinematic OpenUSD robot loader for Three.js — load Isaac Sim / OpenUSD robot assets, extract joints and links, and control articulations in the browser.",
+  "type": "module",
+  "license": "MIT",
+  "author": "neka-nat",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/neka-nat/three-usd-robot.git"
+  },
+  "keywords": [
+    "three",
+    "threejs",
+    "usd",
+    "openusd",
+    "isaac-sim",
+    "robot",
+    "robotics",
+    "kinematics",
+    "urdf",
+    "articulation"
+  ],
+  "sideEffects": false,
+  "files": ["dist", "README.md", "LICENSE"],
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./core": {
+      "types": "./dist/core.d.ts",
+      "import": "./dist/core.js"
+    },
+    "./helpers": {
+      "types": "./dist/helpers.d.ts",
+      "import": "./dist/helpers.js"
+    },
+    "./extras": {
+      "types": "./dist/extras.d.ts",
+      "import": "./dist/extras.js"
+    }
+  },
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit",
+    "lint": "biome check .",
+    "format": "biome format --write .",
+    "check": "biome check --write ."
+  },
+  "peerDependencies": {
+    "three": ">=0.160.0"
+  },
+  "dependencies": {
+    "fflate": "^0.8.2"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^1.9.4",
+    "@types/node": "^20.19.41",
+    "@types/three": "^0.171.0",
+    "three": "^0.171.0",
+    "tsup": "^8.3.5",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

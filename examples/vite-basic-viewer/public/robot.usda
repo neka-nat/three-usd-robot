@@ -1,0 +1,87 @@
+#usda 1.0
+(
+    defaultPrim = "World"
+    metersPerUnit = 1.0
+    upAxis = "Z"
+    doc = "Minimal two-link arm for USDA parser tests (M1)."
+)
+
+def Xform "World" (
+    kind = "component"
+    prepend apiSchemas = ["PhysicsArticulationRootAPI"]
+)
+{
+    def Scope "Looks"
+    {
+    }
+
+    def Xform "base_link" (
+        prepend apiSchemas = ["PhysicsRigidBodyAPI"]
+    )
+    {
+        float3 xformOp:translate = (0, 0, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+
+        def Mesh "geom"
+        {
+            int[] faceVertexCounts = [3, 3]
+            int[] faceVertexIndices = [0, 1, 2, 0, 2, 3]
+            point3f[] points = [(0, 0, 0), (1, 0, 0), (1, 1, 0), (0, 1, 0)]
+            uniform token subdivisionScheme = "none"
+        }
+    }
+
+    def Xform "link1" (
+        prepend apiSchemas = ["PhysicsRigidBodyAPI"]
+    )
+    {
+        float3 xformOp:translate = (0, 0, 1)
+        quatf xformOp:orient = (1, 0, 0, 0)
+        float3 xformOp:scale = (1, 1, 1)
+        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+
+        def Mesh "geom"
+        {
+            int[] faceVertexCounts = [4]
+            int[] faceVertexIndices = [0, 1, 2, 3]
+            point3f[] points = [(0, 0, 0), (0.1, 0, 0), (0.1, 0, 1), (0, 0, 1)]
+        }
+    }
+
+    def Xform "link2" (
+        prepend apiSchemas = ["PhysicsRigidBodyAPI"]
+    )
+    {
+        matrix4d xformOp:transform = ( (1, 0, 0, 0), (0, 1, 0, 0), (0, 0, 1, 0), (0, 0, 1, 1) )
+        uniform token[] xformOpOrder = ["xformOp:transform"]
+    }
+
+    def PhysicsFixedJoint "root_joint"
+    {
+        rel physics:body1 = </World/base_link>
+    }
+
+    def PhysicsRevoluteJoint "joint1"
+    {
+        uniform token physics:axis = "Z"
+        rel physics:body0 = </World/base_link>
+        rel physics:body1 = </World/link1>
+        point3f physics:localPos0 = (0, 0, 1)
+        quatf physics:localRot0 = (1, 0, 0, 0)
+        point3f physics:localPos1 = (0, 0, 0)
+        quatf physics:localRot1 = (1, 0, 0, 0)
+        float physics:lowerLimit = -90
+        float physics:upperLimit = 90
+    }
+
+    def PhysicsPrismaticJoint "joint2"
+    {
+        uniform token physics:axis = "X"
+        rel physics:body0 = </World/link1>
+        rel physics:body1 = </World/link2>
+        point3f physics:localPos0 = (0, 0, 1)
+        point3f physics:localPos1 = (0, 0, 0)
+        float physics:lowerLimit = 0
+        float physics:upperLimit = 0.5
+    }
+}
