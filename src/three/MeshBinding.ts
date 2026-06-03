@@ -15,6 +15,7 @@ import type { RobotDescription } from "../robot/RobotDescription.js";
 import type { Prim } from "../usd/Prim.js";
 import type { Stage } from "../usd/Stage.js";
 import { computeLocalTransform } from "../usd/xformOps.js";
+import { resolveBoundMaterial } from "./MaterialBinding.js";
 import type { ThreeUsdRobot } from "./ThreeUsdRobot.js";
 
 export type MeshKind = "visual" | "collision";
@@ -57,19 +58,38 @@ export function buildMeshGeometry(meshPrim: Prim): THREE.BufferGeometry | null {
   return geometry;
 }
 
-/** Build a default material for a Mesh prim from `displayColor` / `doubleSided`. */
-export function buildMeshMaterial(meshPrim: Prim): THREE.Material {
+/**
+ * Build a material for a Mesh prim. Color priority: bound `UsdShade` material
+ * (when `stage` is given) → `primvars:displayColor` → default gray. Metalness /
+ * roughness / opacity come from the bound material when present.
+ */
+export function buildMeshMaterial(meshPrim: Prim, stage?: Stage): THREE.Material {
   const color = new THREE.Color(DEFAULT_COLOR);
-  const displayColor = meshPrim.GetAttribute("primvars:displayColor").Get();
-  if (isVec3Array(displayColor) && displayColor[0]) {
-    const [r, g, b] = displayColor[0];
-    color.setRGB(r, g, b);
+  let metalness = 0.1;
+  let roughness = 0.8;
+  let opacity = 1;
+
+  const bound = stage ? resolveBoundMaterial(stage, meshPrim) : undefined;
+  if (bound?.color) {
+    color.setRGB(bound.color[0], bound.color[1], bound.color[2]);
+  } else {
+    const displayColor = meshPrim.GetAttribute("primvars:displayColor").Get();
+    if (isVec3Array(displayColor) && displayColor[0]) {
+      const [r, g, b] = displayColor[0];
+      color.setRGB(r, g, b);
+    }
   }
+  if (bound?.metalness !== undefined) metalness = bound.metalness;
+  if (bound?.roughness !== undefined) roughness = bound.roughness;
+  if (bound?.opacity !== undefined) opacity = bound.opacity;
+
   const doubleSided = meshPrim.GetAttribute("doubleSided").Get() === true;
   return new THREE.MeshStandardMaterial({
     color,
-    metalness: 0.1,
-    roughness: 0.8,
+    metalness,
+    roughness,
+    transparent: opacity < 1,
+    opacity,
     side: doubleSided ? THREE.DoubleSide : THREE.FrontSide,
   });
 }
@@ -121,7 +141,7 @@ function attachMesh(
   const geometry = buildMeshGeometry(meshPrim);
   if (!geometry) return;
 
-  const mesh = new THREE.Mesh(geometry, buildMeshMaterial(meshPrim));
+  const mesh = new THREE.Mesh(geometry, buildMeshMaterial(meshPrim, stage));
   mesh.name = meshPrim.GetName();
   mesh.userData.kind = kind;
   mesh.userData.primPath = meshPath;

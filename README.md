@@ -10,11 +10,13 @@ and drives forward kinematics on a Three.js `Object3D` hierarchy.
 
 > 🚧 **Status: v0.2 + USDC.** Loads **ASCII `.usda`**, **binary `.usdc` / `.usd`
 > (crate)**, and **`.usdz`** robots — including multi-file assets via
-> references/payloads/sublayers — drives forward kinematics with meshes,
-> normalizes up-axis & units, and seeds the initial pose from joint drives. The
+> references/payloads/sublayers, **variant selections**, and **instanceable**
+> prims (internal-reference prototypes) — drives forward kinematics with meshes,
+> applies flat **`UsdShade` material colors** (UsdPreviewSurface / OmniPBR
+> constants), normalizes up-axis & units, and seeds the initial pose. The
 > crate reader is a from-scratch TypeScript implementation (no OpenUSD/WASM
-> dependency). Not yet: variants, instancing, and time-sampled (animated)
-> values.
+> dependency). Not yet: variant resolution inside binary crate, and time-sampled
+> (animated) values.
 
 ```ts
 // .usda / .usdc / binary .usd / .usdz are all auto-detected:

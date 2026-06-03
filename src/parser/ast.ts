@@ -128,9 +128,20 @@ export type PrimSpec = {
   metadata: MetadataMap;
   properties: PropertySpec[];
   children: PrimSpec[];
+  /** Authored variant sets (`variantSet "name" = { ... }`), if any. */
+  variantSets?: VariantSetMap;
   /** 1-based source line of the prim declaration (for diagnostics). */
   line: number;
 };
+
+/** The opinions a single variant contributes when selected. */
+export type VariantContent = {
+  properties: PropertySpec[];
+  children: PrimSpec[];
+};
+
+/** `variantSetName → variantName → content`. */
+export type VariantSetMap = { [setName: string]: { [variantName: string]: VariantContent } };
 
 export type PropertySpec = AttributeSpec | RelationshipSpec;
 

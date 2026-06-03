@@ -1,11 +1,14 @@
 /**
- * Minimal USD composition: flattens references, payloads and sublayers into a
- * single {@link UsdaFile} so the rest of the pipeline keeps working on one layer.
+ * Minimal USD composition: flattens references, payloads, sublayers, variant
+ * selections, and internal (intra-layer) reference/inherit arcs into a single
+ * {@link UsdaFile} so the rest of the pipeline keeps working on one layer.
  *
- * Scope (M8): the arcs robots actually use. References and payloads pull a prim
- * subtree from another asset (weaker than local opinions); sublayers overlay a
- * weaker layer stack. Inherits / variants / specializes are out of scope (M10).
- * This is not a full LIVRPS implementation — it is a pragmatic flattener.
+ * Scope: the arcs robots actually use. References/payloads/inherits pull a prim
+ * subtree (weaker than local opinions); a `variants` selection grafts the chosen
+ * variant's content; internal arcs (`</Path>` with no asset) resolve within the
+ * same layer — which is what `instanceable` prims use to pull a prototype.
+ * Specializes ordering and live instancing are approximated. Not a full LIVRPS
+ * engine — a pragmatic flattener.
  */
 
 import {
@@ -15,6 +18,8 @@ import {
   type MetadataMap,
   type PrimSpec,
   type PropertySpec,
+  Quat,
+  UsdMatrix,
   type UsdValue,
   type UsdaFile,
 } from "../parser/ast.js";
@@ -27,14 +32,25 @@ export type ComposeOptions = {
   maxDepth?: number;
 };
 
-/** Composition-arc metadata keys that pull external prim content. */
-const ARC_KEYS = ["references", "payload", "payloads"] as const;
+/** Prim-metadata keys that pull external or internal prim content. */
+const ARC_KEYS = ["references", "payload", "payloads", "inherits", "specializes"] as const;
+/** Layer + prim metadata keys stripped from the flattened output. */
+const STRIP_KEYS = [...ARC_KEYS, "variants", "variantSets"];
 
-/**
- * Parse and fully compose a layer: resolve its sublayers and every prim's
- * references/payloads (recursively), returning a flattened layer. Unresolvable
- * arcs are reported via `onWarn` and skipped.
- */
+/** Per-composition context threaded through the recursion. */
+type Ctx = {
+  baseUrl: string;
+  resolver: AssetResolver;
+  options: ComposeOptions;
+  warn: (m: string) => void;
+  /** External file URLs currently being composed (cycle guard). */
+  stack: ReadonlySet<string>;
+  /** Raw prim specs of this layer, by absolute path (for internal arcs). */
+  index: Map<string, PrimSpec>;
+  /** Internal prim paths currently being resolved (cycle guard). */
+  resolving: ReadonlySet<string>;
+};
+
 export async function composeLayer(
   text: string,
   baseUrl: string,
@@ -49,75 +65,106 @@ export async function composeLayer(
   let weak: PrimSpec[] = [];
   const subLayers = toArcs(file.metadata.subLayers);
   for (let i = subLayers.length - 1; i >= 0; i--) {
-    const sub = await loadComposedFile(subLayers[i]!, baseUrl, resolver, options, stack, warn);
+    const sub = await loadExternalFile(subLayers[i]!, baseUrl, resolver, options, stack, warn);
     if (sub) weak = mergePrimLists(weak, sub.prims);
   }
 
-  // Resolve each root prim's arcs.
+  const ctx: Ctx = {
+    baseUrl,
+    resolver,
+    options,
+    warn,
+    stack,
+    index: buildPathIndex(file.prims),
+    resolving: new Set(),
+  };
+
   const resolved: PrimSpec[] = [];
-  for (const prim of file.prims) {
-    resolved.push(await resolvePrimArcs(prim, baseUrl, resolver, options, stack, warn));
-  }
+  for (const prim of file.prims) resolved.push(await resolvePrim(prim, ctx));
 
   const prims = weak.length > 0 ? mergePrimLists(weak, resolved) : resolved;
-  return { version: file.version, metadata: stripKeys(file.metadata, ["subLayers"]), prims };
+  return { version: file.version, metadata: stripKeys(file.metadata, STRIP_KEYS), prims };
 }
 
-async function resolvePrimArcs(
-  spec: PrimSpec,
-  baseUrl: string,
-  resolver: AssetResolver,
-  options: ComposeOptions,
-  stack: ReadonlySet<string>,
-  warn: (m: string) => void,
-): Promise<PrimSpec> {
-  // Resolve local children first (they belong to this layer's base URL).
-  const children: PrimSpec[] = [];
-  for (const child of spec.children) {
-    children.push(await resolvePrimArcs(child, baseUrl, resolver, options, stack, warn));
+async function resolvePrim(spec: PrimSpec, ctx: Ctx): Promise<PrimSpec> {
+  // 1. Graft the selected variant content (weaker than direct opinions).
+  let properties = spec.properties;
+  let children = spec.children;
+  const selection = spec.metadata.variants;
+  if (spec.variantSets && isDictionary(selection)) {
+    for (const [setName, variantName] of Object.entries(selection)) {
+      const variant = spec.variantSets[setName]?.[String(variantName)];
+      if (!variant) continue;
+      properties = mergeProperties(variant.properties, properties);
+      children = mergePrimLists(variant.children, children);
+    }
   }
-  const local: PrimSpec = { ...spec, children, metadata: stripKeys(spec.metadata, ARC_KEYS) };
 
+  // 2. Resolve children (their own arcs/variants).
+  const resolvedChildren: PrimSpec[] = [];
+  for (const child of children) resolvedChildren.push(await resolvePrim(child, ctx));
+
+  const local: PrimSpec = {
+    specifier: spec.specifier,
+    typeName: spec.typeName,
+    name: spec.name,
+    metadata: stripKeys(spec.metadata, STRIP_KEYS),
+    properties,
+    children: resolvedChildren,
+    line: spec.line,
+  };
+
+  // 3. References / payloads / inherits (all weaker than local opinions).
   const arcs = ARC_KEYS.flatMap((k) => toArcs(spec.metadata[k]));
-  if (arcs.length === 0) return local;
-
-  // Compose referenced prims (strongest-first), all weaker than local opinions.
   let base: PrimSpec | null = null;
   for (const arc of arcs) {
-    const target = await loadReferencedPrim(arc, baseUrl, resolver, options, stack, warn);
-    if (!target) continue;
-    base = base ? mergePrim(target, base) : target;
+    const target = await loadReferencedPrim(arc, ctx);
+    if (target) base = base ? mergePrim(target, base) : target;
   }
   return base ? mergePrim(base, local) : local;
 }
 
-async function loadReferencedPrim(
-  arc: CompositionArc,
-  baseUrl: string,
-  resolver: AssetResolver,
-  options: ComposeOptions,
-  stack: ReadonlySet<string>,
-  warn: (m: string) => void,
-): Promise<PrimSpec | null> {
-  if (!arc.assetPath) {
-    warn(`internal references (no asset path) are not supported yet: <${arc.primPath ?? "?"}>`);
-    return null;
+async function loadReferencedPrim(arc: CompositionArc, ctx: Ctx): Promise<PrimSpec | null> {
+  if (arc.assetPath) {
+    const composed = await loadExternalFile(
+      arc,
+      ctx.baseUrl,
+      ctx.resolver,
+      ctx.options,
+      ctx.stack,
+      ctx.warn,
+    );
+    if (!composed) return null;
+    const target = arc.primPath
+      ? findPrimByPath(composed, arc.primPath)
+      : defaultPrim(composed, ctx.warn);
+    if (!target) {
+      ctx.warn(
+        `reference target ${arc.primPath ?? "(defaultPrim)"} not found in ${arc.assetPath.path}`,
+      );
+      return null;
+    }
+    return target; // external targets are already fully composed
   }
-  const composed = await loadComposedFile(arc, baseUrl, resolver, options, stack, warn);
-  if (!composed) return null;
 
-  const target = arc.primPath
-    ? findPrimByPath(composed, arc.primPath)
-    : defaultPrim(composed, warn);
-  if (!target) {
-    warn(`reference target ${arc.primPath ?? "(defaultPrim)"} not found in ${arc.assetPath.path}`);
-    return null;
+  // Internal arc: a `</Path>` within this layer (used by instanceable prototypes).
+  if (arc.primPath) {
+    if (ctx.resolving.has(arc.primPath)) {
+      ctx.warn(`internal composition cycle at ${arc.primPath}; skipping`);
+      return null;
+    }
+    const target = ctx.index.get(arc.primPath);
+    if (!target) {
+      ctx.warn(`internal reference target ${arc.primPath} not found`);
+      return null;
+    }
+    return resolvePrim(target, { ...ctx, resolving: new Set([...ctx.resolving, arc.primPath]) });
   }
-  return target;
+  return null;
 }
 
-/** Resolve, fetch and fully compose the file an arc points at (with cycle/depth guards). */
-async function loadComposedFile(
+/** Resolve, fetch and fully compose the external file an arc points at. */
+async function loadExternalFile(
   arc: CompositionArc,
   baseUrl: string,
   resolver: AssetResolver,
@@ -151,7 +198,6 @@ async function loadComposedFile(
 
 function mergePrim(base: PrimSpec, over: PrimSpec): PrimSpec {
   return {
-    // `over` (def) wins; a pure `over` opinion keeps the base's specifier.
     specifier: over.specifier === "over" ? base.specifier : over.specifier,
     typeName: over.typeName || base.typeName,
     name: over.name,
@@ -183,7 +229,7 @@ function mergeProperties(base: PropertySpec[], over: PropertySpec[]): PropertySp
 }
 
 function mergeProperty(base: PropertySpec, over: PropertySpec): PropertySpec {
-  if (base.kind !== over.kind) return over; // kind change: stronger wins outright
+  if (base.kind !== over.kind) return over;
   if (base.kind === "attribute" && over.kind === "attribute") {
     const merged: AttributeSpec = {
       ...over,
@@ -210,7 +256,6 @@ function mergeProperty(base: PropertySpec, over: PropertySpec): PropertySpec {
 
 function mergeMetadata(base: MetadataMap, over: MetadataMap): MetadataMap {
   const merged: MetadataMap = { ...base, ...over };
-  // apiSchemas accumulate (union, base order first).
   const a = base.apiSchemas;
   const b = over.apiSchemas;
   if (Array.isArray(a) || Array.isArray(b)) {
@@ -229,6 +274,20 @@ function mergeMetadata(base: MetadataMap, over: MetadataMap): MetadataMap {
 
 // --- lookups & helpers -----------------------------------------------------
 
+/** Index every prim spec in a tree by its absolute path. */
+function buildPathIndex(
+  prims: PrimSpec[],
+  parent = "/",
+  map = new Map<string, PrimSpec>(),
+): Map<string, PrimSpec> {
+  for (const p of prims) {
+    const path = parent === "/" ? `/${p.name}` : `${parent}/${p.name}`;
+    map.set(path, p);
+    buildPathIndex(p.children, path, map);
+  }
+  return map;
+}
+
 function findPrimByPath(file: UsdaFile, path: string): PrimSpec | null {
   const segments = path.split("/").filter(Boolean);
   let level = file.prims;
@@ -243,24 +302,35 @@ function findPrimByPath(file: UsdaFile, path: string): PrimSpec | null {
 
 function defaultPrim(file: UsdaFile, warn: (m: string) => void): PrimSpec | null {
   const name = file.metadata.defaultPrim;
-  if (typeof name === "string") {
-    return file.prims.find((p) => p.name === name) ?? null;
-  }
+  if (typeof name === "string") return file.prims.find((p) => p.name === name) ?? null;
   const first = file.prims[0];
   if (first) warn(`referenced layer has no defaultPrim; using first root prim "${first.name}"`);
   return first ?? null;
 }
 
-/** Normalize references/payloads/sublayers metadata into a list of arcs. */
+/** Normalize references/payloads/inherits/sublayers metadata into a list of arcs. */
 function toArcs(value: UsdValue | undefined): CompositionArc[] {
   if (value === undefined) return [];
   const list = Array.isArray(value) ? value : [value];
   const arcs: CompositionArc[] = [];
   for (const v of list) {
     if (v instanceof AssetPath) arcs.push({ assetPath: v });
-    else if (v && typeof v === "object" && "assetPath" in v) arcs.push(v as CompositionArc);
+    else if (v && typeof v === "object" && ("assetPath" in v || "primPath" in v))
+      arcs.push(v as CompositionArc);
   }
   return arcs;
+}
+
+/** A plain metadata dictionary (not a Vec/Quat/Matrix/AssetPath/array). */
+function isDictionary(v: UsdValue | undefined): v is { [k: string]: UsdValue } {
+  return (
+    typeof v === "object" &&
+    v !== null &&
+    !Array.isArray(v) &&
+    !(v instanceof Quat) &&
+    !(v instanceof UsdMatrix) &&
+    !(v instanceof AssetPath)
+  );
 }
 
 function stripKeys(meta: MetadataMap, keys: readonly string[]): MetadataMap {

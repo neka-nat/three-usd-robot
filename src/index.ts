@@ -22,6 +22,7 @@ export {
   buildMeshMaterial,
   type MeshKind,
 } from "./three/MeshBinding.js";
+export { type ResolvedMaterial, resolveBoundMaterial } from "./three/MaterialBinding.js";
 export { ThreeUsdRobot, type ThreeUsdRobotOptions } from "./three/ThreeUsdRobot.js";
 export {
   ThreeUsdRobotLoader,

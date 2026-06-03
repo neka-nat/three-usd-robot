@@ -21,6 +21,7 @@ import type {
   UsdValue,
   UsdaFile,
   Variability,
+  VariantSetMap,
 } from "./ast.js";
 import { AssetPath } from "./ast.js";
 import { TokenReader } from "./reader.js";
@@ -67,27 +68,68 @@ function parsePrim(r: TokenReader): PrimSpec {
 
   const metadata = r.is("lparen") ? parseMetadataBlock(r) : {};
 
-  const properties: PropertySpec[] = [];
-  const children: PrimSpec[] = [];
   r.expect("lbrace");
-  while (!r.is("rbrace") && !r.atEnd()) {
-    if (r.is("ident") && SPECIFIERS.has(r.peek().value)) {
-      children.push(parsePrim(r));
-    } else {
-      properties.push(parseProperty(r));
-    }
-  }
+  const body = parseBody(r);
   r.expect("rbrace");
 
-  return {
+  const prim: PrimSpec = {
     specifier: specifier as Specifier,
     typeName,
     name,
     metadata,
-    properties,
-    children,
+    properties: body.properties,
+    children: body.children,
     line: head.line,
   };
+  if (body.variantSets) prim.variantSets = body.variantSets;
+  return prim;
+}
+
+type Body = {
+  properties: PropertySpec[];
+  children: PrimSpec[];
+  variantSets?: VariantSetMap;
+};
+
+/** Parse a prim/variant body (properties, child prims, variant sets) until `}`. */
+function parseBody(r: TokenReader): Body {
+  const properties: PropertySpec[] = [];
+  const children: PrimSpec[] = [];
+  let variantSets: VariantSetMap | undefined;
+
+  while (!r.is("rbrace") && !r.atEnd()) {
+    if (r.is("ident") && SPECIFIERS.has(r.peek().value)) {
+      children.push(parsePrim(r));
+    } else if (r.isIdent("variantSet")) {
+      const { setName, variants } = parseVariantSet(r);
+      variantSets ??= {};
+      variantSets[setName] = variants;
+    } else {
+      properties.push(parseProperty(r));
+    }
+  }
+
+  return variantSets ? { properties, children, variantSets } : { properties, children };
+}
+
+/** Parse `variantSet "name" = { "variant" (meta)? { body } ... }`. */
+function parseVariantSet(r: TokenReader): { setName: string; variants: VariantSetMap[string] } {
+  r.expectIdent(); // "variantSet"
+  const setName = r.expect("string").value;
+  r.expect("equals");
+  r.expect("lbrace");
+
+  const variants: VariantSetMap[string] = {};
+  while (!r.is("rbrace") && !r.atEnd()) {
+    const variantName = r.expect("string").value;
+    if (r.is("lparen")) parseMetadataBlock(r); // variant metadata (ignored)
+    r.expect("lbrace");
+    const body = parseBody(r);
+    r.expect("rbrace");
+    variants[variantName] = { properties: body.properties, children: body.children };
+  }
+  r.expect("rbrace");
+  return { setName, variants };
 }
 
 // ---------------------------------------------------------------------------
@@ -256,6 +298,11 @@ function parseMetadataValue(r: TokenReader): UsdValue {
   if (raw.t === "asset") {
     return raw.v; // bare asset path
   }
+  // Bare `</Prim>` is an internal composition arc (reference / inherit target).
+  if (raw.t === "path") {
+    const arc: CompositionArc = { primPath: raw.v };
+    return arc;
+  }
   return rawToUsdValue(raw);
 }
 
@@ -276,6 +323,9 @@ function parseMetadataList(r: TokenReader): UsdValue {
       } else {
         items.push(assetPath);
       }
+    } else if (r.is("path")) {
+      const arc: CompositionArc = { primPath: r.next().value };
+      items.push(arc);
     } else {
       items.push(rawToUsdValue(parseLiteral(r)));
     }
