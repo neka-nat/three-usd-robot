@@ -14,7 +14,7 @@ and drives forward kinematics on a Three.js `Object3D` hierarchy.
 > normalizes up-axis & units, and seeds the initial pose from joint drives. The
 > crate reader is a from-scratch TypeScript implementation (no OpenUSD/WASM
 > dependency). Not yet: variants, instancing, and time-sampled (animated)
-> values (see [`MILESTONES.md`](./MILESTONES.md), M10–M11).
+> values.
 
 ```ts
 // .usda / .usdc / binary .usd / .usdz are all auto-detected:
