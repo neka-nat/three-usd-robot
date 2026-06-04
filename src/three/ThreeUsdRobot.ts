@@ -1,4 +1,5 @@
 import * as THREE from "three";
+import { interpolate } from "../kinematics/sampling.js";
 import { type Mat4, invert, multiply } from "../kinematics/transforms.js";
 import type {
   JointDescription,
@@ -226,6 +227,47 @@ export class ThreeUsdRobot extends THREE.Object3D {
 
   getKinematicTree(): KinematicTree {
     return this.tree;
+  }
+
+  // -- Animation playback --------------------------------------------------
+
+  /** Playback rate in time codes per second (from the stage; default 24). */
+  getTimeCodesPerSecond(): number {
+    return this.robot.timeCodesPerSecond ?? 24;
+  }
+
+  /** Whether any joint has a time-sampled trajectory. */
+  hasAnimation(): boolean {
+    return Object.values(this.robot.joints).some((j) => j.valueSamples !== undefined);
+  }
+
+  /**
+   * Animation range in time codes: the union of authored joint sample ranges,
+   * falling back to the stage `startTimeCode`/`endTimeCode`. `null` if neither.
+   */
+  getTimeRange(): { start: number; end: number } | null {
+    let start = Number.POSITIVE_INFINITY;
+    let end = Number.NEGATIVE_INFINITY;
+    for (const joint of Object.values(this.robot.joints)) {
+      const times = joint.valueSamples?.times;
+      if (!times || times.length === 0) continue;
+      start = Math.min(start, times[0]!);
+      end = Math.max(end, times[times.length - 1]!);
+    }
+    if (start <= end) return { start, end };
+
+    const { startTimeCode, endTimeCode } = this.robot;
+    if (startTimeCode !== undefined && endTimeCode !== undefined) {
+      return { start: startTimeCode, end: endTimeCode };
+    }
+    return null;
+  }
+
+  /** Sample every animated joint at time code `t` and apply the values. */
+  setTime(t: number): void {
+    for (const [key, joint] of Object.entries(this.robot.joints)) {
+      if (joint.valueSamples) this.setJointValue(key, interpolate(joint.valueSamples, t));
+    }
   }
 
   // -- Display toggles -----------------------------------------------------

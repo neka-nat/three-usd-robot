@@ -10,10 +10,13 @@ npm install
 npm run dev
 ```
 
-- **vite-joint-slider** — loads the sample arm and exposes a `lil-gui` slider per
-  joint (via `three-usd-robot/extras`), with joint-axis helpers on.
+- **vite-joint-slider** — loads the sample 3-link arm (`public/robot.usda`),
+  exposes a `lil-gui` slider per joint (via `three-usd-robot/extras`), and shows
+  joint-axis helpers. Load any other asset with `?asset=<url>` (`.usda`/`.usdc`/
+  binary `.usd`/`.usdz` are auto-detected) — e.g. `?asset=/arm_anim.usda` shows
+  the **animation playback** controls (a play toggle + time slider).
 - **vite-basic-viewer** — minimal load-and-pose viewer.
 
-Both load `public/robot.usda` (a copy of `test-assets/two_link_arm.usda`). The
-sample is Z-up, so the examples rotate the robot into the Y-up scene until the
-M9 up-axis conversion lands.
+The loader normalizes up-axis and units, so assets appear upright with no manual
+rotation. `public/arm_anim.usda` is the arm with time-sampled joint drives,
+included to demo playback.

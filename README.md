@@ -13,10 +13,10 @@ and drives forward kinematics on a Three.js `Object3D` hierarchy.
 > references/payloads/sublayers, **variant selections**, and **instanceable**
 > prims (internal-reference prototypes) — drives forward kinematics with meshes,
 > applies flat **`UsdShade` material colors** (UsdPreviewSurface / OmniPBR
-> constants), normalizes up-axis & units, and seeds the initial pose. The
-> crate reader is a from-scratch TypeScript implementation (no OpenUSD/WASM
-> dependency). Not yet: variant resolution inside binary crate, and time-sampled
-> (animated) values.
+> constants), normalizes up-axis & units, seeds the initial pose, and **plays
+> back time-sampled joint trajectories**. The crate reader is a from-scratch
+> TypeScript implementation (no OpenUSD/WASM dependency). Not yet: time samples
+> inside binary crate, and variant resolution inside binary crate.
 
 ```ts
 // .usda / .usdc / binary .usd / .usdz are all auto-detected:
@@ -24,6 +24,8 @@ const robot = await new ThreeUsdRobotLoader().loadAsync("/assets/robot.usd");
 // or from bytes you already have:
 const robot = await new ThreeUsdRobotLoader().parseCrate(usdcBytes);
 ```
+
+![demo](assets/anim_demo.gif)
 
 ## Install
 
@@ -75,6 +77,20 @@ createJointSliderPanel(robot, new GUI()); // one slider per articulated joint
 
 The `extras` panel takes the GUI instance from you, so the library never bundles
 `lil-gui`. See [`examples/`](./examples) for runnable Vite demos.
+
+### Animation playback
+
+If the asset has time-sampled joint trajectories (joint-state or drive-target
+time samples), the robot plays them back:
+
+```ts
+if (robot.hasAnimation()) {
+  const { start, end } = robot.getTimeRange()!;
+  const fps = robot.getTimeCodesPerSecond();
+  // in your render loop, advance a time code and sample:
+  robot.setTime(t); // interpolates every animated joint and updates FK
+}
+```
 
 ### Inspect without Three.js
 

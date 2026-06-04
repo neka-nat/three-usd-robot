@@ -101,8 +101,13 @@ export function extractRobotDescription(
     joints,
     upAxis: stage.GetUpAxis(),
     metersPerUnit: stage.GetMetersPerUnit(),
+    timeCodesPerSecond: stage.GetTimeCodesPerSecond(),
     ...(articulationRoots.length ? { articulationRoots } : {}),
   };
+  const startTimeCode = stage.GetStartTimeCode();
+  if (startTimeCode !== undefined) robot.startTimeCode = startTimeCode;
+  const endTimeCode = stage.GetEndTimeCode();
+  if (endTimeCode !== undefined) robot.endTimeCode = endTimeCode;
 
   // 6. Build the spanning tree to set the authoritative root + loop joints.
   const tree = buildKinematicTree(robot, { onWarn: warn });
@@ -191,6 +196,19 @@ function buildJoint(
     ...(drive.maxForce !== undefined ? { maxForce: drive.maxForce } : {}),
   };
   if (Object.keys(driveDesc).length > 0) joint.drive = driveDesc;
+
+  // Time-sampled trajectory: prefer joint-state position, else the drive target.
+  const stateSamples = prim.GetAttribute(`state:${kind}:physics:position`).GetTimeSamples();
+  const driveSamples = prim.GetAttribute(`drive:${kind}:physics:targetPosition`).GetTimeSamples();
+  const samples = stateSamples.size > 0 ? stateSamples : driveSamples;
+  if (samples.size > 0) {
+    const times = [...samples.keys()].sort((a, b) => a - b);
+    const values = times.map((t) => {
+      const v = samples.get(t);
+      return typeof v === "number" ? jointValueToSI(angular, v) : 0;
+    });
+    joint.valueSamples = { times, values };
+  }
 
   return joint;
 }

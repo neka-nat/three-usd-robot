@@ -9,6 +9,7 @@
  * See concept.md §9 for the rationale behind each field.
  */
 
+import type { SampleChannel } from "../kinematics/sampling.js";
 import type { Mat4 } from "../kinematics/transforms.js";
 
 export type JointType = "fixed" | "revolute" | "continuous" | "prismatic";
@@ -30,6 +31,11 @@ export type RobotDescription = {
   upAxis: "Y" | "Z";
   /** Stage linear unit, for the M9 scale normalization. */
   metersPerUnit: number;
+  /** Playback rate (time codes per second); defaults to 24 when unauthored. */
+  timeCodesPerSecond?: number;
+  /** Authored animation range (time codes), if any. */
+  startTimeCode?: number;
+  endTimeCode?: number;
   /** Non-fatal extraction diagnostics. */
   warnings?: string[];
 };
@@ -71,6 +77,8 @@ export type JointDescription = {
 
   /** Initial joint value (SI) from JointStateAPI or a drive target, if authored. */
   initialValue?: number;
+  /** Time-sampled joint value trajectory (SI), if authored — drives playback. */
+  valueSamples?: SampleChannel;
   drive?: JointDriveDescription;
 };
 

@@ -39,6 +39,9 @@ function frame(object: THREE.Object3D) {
   controls.update();
 }
 
+const clock = new THREE.Clock();
+let tick: (() => void) | undefined;
+
 async function main() {
   // Load `?asset=<url>` (e.g. a binary .usd) or fall back to the sample arm.
   const asset = new URLSearchParams(location.search).get("asset") ?? "/robot.usda";
@@ -47,8 +50,31 @@ async function main() {
   robot.showJointAxes = true;
   frame(robot);
 
-  createJointSliderPanel(robot, new GUI({ title: "Joints" }));
+  const gui = new GUI({ title: "three-usd-robot" });
+  const panel = createJointSliderPanel(robot, gui.addFolder("Joints"));
   console.info("links:", robot.getLinkNames().length, "joints:", robot.getJointNames().length);
+
+  // Playback controls appear only for animated assets.
+  const range = robot.getTimeRange();
+  if (range) {
+    const fps = robot.getTimeCodesPerSecond();
+    const pb = { playing: true, time: range.start };
+    const folder = gui.addFolder("Playback");
+    folder.add(pb, "playing").name("play");
+    const timeCtrl = folder.add(pb, "time", range.start, range.end, 0.01).onChange(() => {
+      pb.playing = false;
+      robot.setTime(pb.time);
+      panel.update();
+    });
+    tick = () => {
+      if (!pb.playing) return;
+      pb.time += clock.getDelta() * fps;
+      if (pb.time > range.end) pb.time = range.start;
+      robot.setTime(pb.time);
+      timeCtrl.updateDisplay();
+      panel.update();
+    };
+  }
 }
 
 window.addEventListener("resize", () => {
@@ -58,6 +84,7 @@ window.addEventListener("resize", () => {
 });
 
 renderer.setAnimationLoop(() => {
+  tick?.();
   controls.update();
   renderer.render(scene, camera);
 });

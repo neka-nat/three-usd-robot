@@ -29,9 +29,10 @@ yarn-error.log*
 .env
 .env.local
 
-# Local USD assets (large; not committed)
+# Local USD assets (large binaries; not committed — .usda text examples are kept)
 data/
-examples/**/torobo2.usd
+examples/**/*.usd
 torobo2-render.png
 torobo2-color.png
 arm-render.png
+arm-anim.png

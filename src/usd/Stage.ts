@@ -89,4 +89,23 @@ export class Stage {
     const v = this._layer.GetMetadata("metersPerUnit");
     return typeof v === "number" ? v : DEFAULT_METERS_PER_UNIT;
   }
+
+  /** Animation start time code, if authored. */
+  GetStartTimeCode(): number | undefined {
+    const v = this._layer.GetMetadata("startTimeCode");
+    return typeof v === "number" ? v : undefined;
+  }
+
+  /** Animation end time code, if authored. */
+  GetEndTimeCode(): number | undefined {
+    const v = this._layer.GetMetadata("endTimeCode");
+    return typeof v === "number" ? v : undefined;
+  }
+
+  /** Time codes per second for playback; defaults to 24. */
+  GetTimeCodesPerSecond(): number {
+    const v =
+      this._layer.GetMetadata("timeCodesPerSecond") ?? this._layer.GetMetadata("framesPerSecond");
+    return typeof v === "number" && v > 0 ? v : 24;
+  }
 }

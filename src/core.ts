@@ -79,6 +79,9 @@ export {
 // xformOp resolution
 export { computeLocalTransform, parseOpType, type ResolvedXform } from "./usd/xformOps.js";
 
+// Time-sample interpolation
+export { channelFromSamples, interpolate, type SampleChannel } from "./kinematics/sampling.js";
+
 // Robot IR + extraction
 export type {
   Axis,

@@ -1,0 +1,173 @@
+#usda 1.0
+(
+    defaultPrim = "Arm"
+    metersPerUnit = 1.0
+    upAxis = "Z"
+    startTimeCode = 0
+    endTimeCode = 60
+    timeCodesPerSecond = 24
+    doc = "A 3-link revolute robot arm (sample for three-usd-robot examples)."
+)
+
+# A serial arm: base -> link1 -> link2 -> link3, three revolute joints.
+# Each link is a box authored in its own local frame (origin at z=0, extending
+# up +Z); the joints place each link at the top of its parent. Colors come from
+# bound UsdShade materials.
+def Xform "Arm" (
+    kind = "component"
+    prepend apiSchemas = ["PhysicsArticulationRootAPI"]
+)
+{
+    def Scope "Looks"
+    {
+        def Material "BaseMat"
+        {
+            token outputs:surface.connect = </Arm/Looks/BaseMat/Shader.outputs:surface>
+            def Shader "Shader"
+            {
+                uniform token info:id = "UsdPreviewSurface"
+                color3f inputs:diffuseColor = (0.18, 0.18, 0.2)
+                float inputs:metallic = 0.2
+                float inputs:roughness = 0.6
+                token outputs:surface
+            }
+        }
+        def Material "Link1Mat"
+        {
+            token outputs:surface.connect = </Arm/Looks/Link1Mat/Shader.outputs:surface>
+            def Shader "Shader"
+            {
+                uniform token info:id = "UsdPreviewSurface"
+                color3f inputs:diffuseColor = (0.9, 0.45, 0.1)
+                float inputs:roughness = 0.5
+                token outputs:surface
+            }
+        }
+        def Material "Link2Mat"
+        {
+            token outputs:surface.connect = </Arm/Looks/Link2Mat/Shader.outputs:surface>
+            def Shader "Shader"
+            {
+                uniform token info:id = "UsdPreviewSurface"
+                color3f inputs:diffuseColor = (0.2, 0.45, 0.8)
+                float inputs:roughness = 0.5
+                token outputs:surface
+            }
+        }
+        def Material "Link3Mat"
+        {
+            token outputs:surface.connect = </Arm/Looks/Link3Mat/Shader.outputs:surface>
+            def Shader "Shader"
+            {
+                uniform token info:id = "UsdPreviewSurface"
+                color3f inputs:diffuseColor = (0.3, 0.7, 0.35)
+                float inputs:roughness = 0.5
+                token outputs:surface
+            }
+        }
+    }
+
+    # --- Links (geometry authored in link-local space, origin at z = 0) ------
+
+    def Xform "base_link" ( prepend apiSchemas = ["PhysicsRigidBodyAPI"] )
+    {
+        def Mesh "geom"
+        {
+            rel material:binding = </Arm/Looks/BaseMat>
+            int[] faceVertexCounts = [4, 4, 4, 4, 4, 4]
+            int[] faceVertexIndices = [0, 3, 2, 1, 4, 5, 6, 7, 0, 1, 5, 4, 1, 2, 6, 5, 2, 3, 7, 6, 3, 0, 4, 7]
+            point3f[] points = [
+                (-0.3, -0.3, 0), (0.3, -0.3, 0), (0.3, 0.3, 0), (-0.3, 0.3, 0),
+                (-0.3, -0.3, 0.1), (0.3, -0.3, 0.1), (0.3, 0.3, 0.1), (-0.3, 0.3, 0.1)
+            ]
+        }
+    }
+
+    def Xform "link1" ( prepend apiSchemas = ["PhysicsRigidBodyAPI"] )
+    {
+        def Mesh "geom"
+        {
+            rel material:binding = </Arm/Looks/Link1Mat>
+            int[] faceVertexCounts = [4, 4, 4, 4, 4, 4]
+            int[] faceVertexIndices = [0, 3, 2, 1, 4, 5, 6, 7, 0, 1, 5, 4, 1, 2, 6, 5, 2, 3, 7, 6, 3, 0, 4, 7]
+            point3f[] points = [
+                (-0.08, -0.08, 0), (0.08, -0.08, 0), (0.08, 0.08, 0), (-0.08, 0.08, 0),
+                (-0.08, -0.08, 1.0), (0.08, -0.08, 1.0), (0.08, 0.08, 1.0), (-0.08, 0.08, 1.0)
+            ]
+        }
+    }
+
+    def Xform "link2" ( prepend apiSchemas = ["PhysicsRigidBodyAPI"] )
+    {
+        def Mesh "geom"
+        {
+            rel material:binding = </Arm/Looks/Link2Mat>
+            int[] faceVertexCounts = [4, 4, 4, 4, 4, 4]
+            int[] faceVertexIndices = [0, 3, 2, 1, 4, 5, 6, 7, 0, 1, 5, 4, 1, 2, 6, 5, 2, 3, 7, 6, 3, 0, 4, 7]
+            point3f[] points = [
+                (-0.07, -0.07, 0), (0.07, -0.07, 0), (0.07, 0.07, 0), (-0.07, 0.07, 0),
+                (-0.07, -0.07, 0.8), (0.07, -0.07, 0.8), (0.07, 0.07, 0.8), (-0.07, 0.07, 0.8)
+            ]
+        }
+    }
+
+    def Xform "link3" ( prepend apiSchemas = ["PhysicsRigidBodyAPI"] )
+    {
+        def Mesh "geom"
+        {
+            rel material:binding = </Arm/Looks/Link3Mat>
+            int[] faceVertexCounts = [4, 4, 4, 4, 4, 4]
+            int[] faceVertexIndices = [0, 3, 2, 1, 4, 5, 6, 7, 0, 1, 5, 4, 1, 2, 6, 5, 2, 3, 7, 6, 3, 0, 4, 7]
+            point3f[] points = [
+                (-0.06, -0.06, 0), (0.06, -0.06, 0), (0.06, 0.06, 0), (-0.06, 0.06, 0),
+                (-0.06, -0.06, 0.5), (0.06, -0.06, 0.5), (0.06, 0.06, 0.5), (-0.06, 0.06, 0.5)
+            ]
+        }
+    }
+
+    # --- Joints --------------------------------------------------------------
+
+    def PhysicsFixedJoint "root_joint"
+    {
+        rel physics:body1 = </Arm/base_link>
+    }
+
+    # Base yaw (rotates the whole arm about the vertical Z axis).
+    def PhysicsRevoluteJoint "joint1" ( prepend apiSchemas = ["PhysicsDriveAPI:angular"] )
+    {
+        float drive:angular:physics:targetPosition.timeSamples = { 0: 0, 30: 90, 60: 0 }
+        uniform token physics:axis = "Z"
+        rel physics:body0 = </Arm/base_link>
+        rel physics:body1 = </Arm/link1>
+        point3f physics:localPos0 = (0, 0, 0.1)
+        point3f physics:localPos1 = (0, 0, 0)
+        float physics:lowerLimit = -180
+        float physics:upperLimit = 180
+    }
+
+    # Shoulder pitch (bends about Y at the top of link1).
+    def PhysicsRevoluteJoint "joint2" ( prepend apiSchemas = ["PhysicsDriveAPI:angular"] )
+    {
+        float drive:angular:physics:targetPosition.timeSamples = { 0: 0, 20: -70, 40: 40, 60: 0 }
+        uniform token physics:axis = "Y"
+        rel physics:body0 = </Arm/link1>
+        rel physics:body1 = </Arm/link2>
+        point3f physics:localPos0 = (0, 0, 1.0)
+        point3f physics:localPos1 = (0, 0, 0)
+        float physics:lowerLimit = -120
+        float physics:upperLimit = 120
+    }
+
+    # Elbow pitch (bends about Y at the top of link2).
+    def PhysicsRevoluteJoint "joint3" ( prepend apiSchemas = ["PhysicsDriveAPI:angular"] )
+    {
+        float drive:angular:physics:targetPosition.timeSamples = { 0: 0, 30: 90, 60: 0 }
+        uniform token physics:axis = "Y"
+        rel physics:body0 = </Arm/link2>
+        rel physics:body1 = </Arm/link3>
+        point3f physics:localPos0 = (0, 0, 0.8)
+        point3f physics:localPos1 = (0, 0, 0)
+        float physics:lowerLimit = -120
+        float physics:upperLimit = 120
+    }
+}
