@@ -16,6 +16,7 @@ import type { Prim } from "../usd/Prim.js";
 import type { Stage } from "../usd/Stage.js";
 import { computeLocalTransform } from "../usd/xformOps.js";
 import { resolveBoundMaterial } from "./MaterialBinding.js";
+import type { TextureProvider } from "./TextureBinding.js";
 import type { ThreeUsdRobot } from "./ThreeUsdRobot.js";
 
 export type MeshKind = "visual" | "collision";
@@ -25,6 +26,8 @@ const DEFAULT_COLOR = 0x9a9a9a;
 export type BindMeshesOptions = {
   loadVisuals?: boolean;
   loadCollisions?: boolean;
+  /** Resolves diffuse texture asset paths to `THREE.Texture` (M-tex). */
+  textureProvider?: TextureProvider;
 };
 
 /** Build a `BufferGeometry` from a Mesh prim, or `null` if it has no points. */
@@ -60,10 +63,15 @@ export function buildMeshGeometry(meshPrim: Prim): THREE.BufferGeometry | null {
 
 /**
  * Build a material for a Mesh prim. Color priority: bound `UsdShade` material
- * (when `stage` is given) → `primvars:displayColor` → default gray. Metalness /
- * roughness / opacity come from the bound material when present.
+ * (when `stage` is given) → `primvars:displayColor` → default gray. A diffuse
+ * texture (via `textures`) becomes `material.map`; metalness / roughness /
+ * opacity come from the bound material when present.
  */
-export function buildMeshMaterial(meshPrim: Prim, stage?: Stage): THREE.Material {
+export function buildMeshMaterial(
+  meshPrim: Prim,
+  stage?: Stage,
+  textures?: TextureProvider,
+): THREE.Material {
   const color = new THREE.Color(DEFAULT_COLOR);
   let metalness = 0.1;
   let roughness = 0.8;
@@ -83,6 +91,9 @@ export function buildMeshMaterial(meshPrim: Prim, stage?: Stage): THREE.Material
   if (bound?.roughness !== undefined) roughness = bound.roughness;
   if (bound?.opacity !== undefined) opacity = bound.opacity;
 
+  const map = bound?.colorTexture && textures ? textures(bound.colorTexture) : null;
+  if (map) color.setRGB(1, 1, 1); // don't tint the texture
+
   const doubleSided = meshPrim.GetAttribute("doubleSided").Get() === true;
   return new THREE.MeshStandardMaterial({
     color,
@@ -91,6 +102,7 @@ export function buildMeshMaterial(meshPrim: Prim, stage?: Stage): THREE.Material
     transparent: opacity < 1,
     opacity,
     side: doubleSided ? THREE.DoubleSide : THREE.FrontSide,
+    ...(map ? { map } : {}),
   });
 }
 
@@ -107,6 +119,7 @@ export function bindRobotMeshes(
 ): void {
   const loadVisuals = options.loadVisuals ?? true;
   const loadCollisions = options.loadCollisions ?? false;
+  const textures = options.textureProvider;
 
   for (const [key, link] of Object.entries(desc.links)) {
     const linkObj = robot3d.getLinkObject(key);
@@ -118,12 +131,12 @@ export function bindRobotMeshes(
     if (loadVisuals) {
       for (const meshPath of link.visualPrims) {
         if (collisionSet.has(meshPath)) continue; // collision-only handled below
-        attachMesh(stage, linkPrim, meshPath, linkObj, "visual");
+        attachMesh(stage, linkPrim, meshPath, linkObj, "visual", textures);
       }
     }
     if (loadCollisions) {
       for (const meshPath of link.collisionPrims ?? []) {
-        attachMesh(stage, linkPrim, meshPath, linkObj, "collision");
+        attachMesh(stage, linkPrim, meshPath, linkObj, "collision", textures);
       }
     }
   }
@@ -135,13 +148,14 @@ function attachMesh(
   meshPath: string,
   parent: THREE.Object3D,
   kind: MeshKind,
+  textures: TextureProvider | undefined,
 ): void {
   const meshPrim = stage.GetPrimAtPath(meshPath);
   if (!meshPrim) return;
   const geometry = buildMeshGeometry(meshPrim);
   if (!geometry) return;
 
-  const mesh = new THREE.Mesh(geometry, buildMeshMaterial(meshPrim, stage));
+  const mesh = new THREE.Mesh(geometry, buildMeshMaterial(meshPrim, stage, textures));
   mesh.name = meshPrim.GetName();
   mesh.userData.kind = kind;
   mesh.userData.primPath = meshPath;

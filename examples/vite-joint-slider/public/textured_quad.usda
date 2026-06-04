@@ -1,0 +1,49 @@
+#usda 1.0
+(
+    defaultPrim = "World"
+    upAxis = "Z"
+    metersPerUnit = 1.0
+    doc = "A textured quad — demonstrates UsdShade UsdUVTexture support."
+)
+
+def Xform "World" ( prepend apiSchemas = ["PhysicsArticulationRootAPI"] )
+{
+    def Scope "Looks"
+    {
+        def Material "Checker"
+        {
+            token outputs:surface.connect = </World/Looks/Checker/Surface.outputs:surface>
+            def Shader "Surface"
+            {
+                uniform token info:id = "UsdPreviewSurface"
+                color3f inputs:diffuseColor.connect = </World/Looks/Checker/Image.outputs:rgb>
+                float inputs:roughness = 0.7
+                token outputs:surface
+            }
+            def Shader "Image"
+            {
+                uniform token info:id = "UsdUVTexture"
+                asset inputs:file = @./textures/checker.png@
+                token outputs:rgb
+            }
+        }
+    }
+
+    def Xform "panel_link" ( prepend apiSchemas = ["PhysicsRigidBodyAPI"] )
+    {
+        def Mesh "geom"
+        {
+            rel material:binding = </World/Looks/Checker>
+            int[] faceVertexCounts = [4]
+            int[] faceVertexIndices = [0, 1, 2, 3]
+            point3f[] points = [(-1, 0, 0), (1, 0, 0), (1, 0, 2), (-1, 0, 2)]
+            texCoord2f[] primvars:st = [(0, 0), (1, 0), (1, 1), (0, 1)]
+            uniform bool doubleSided = true
+        }
+    }
+
+    def PhysicsFixedJoint "root_joint"
+    {
+        rel physics:body1 = </World/panel_link>
+    }
+}

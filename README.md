@@ -13,11 +13,11 @@ and drives forward kinematics on a Three.js `Object3D` hierarchy.
 > references / payloads / sublayers (resolved across `.usda` *and* binary layers,
 > with relationship-path remapping), **variant selections**, and **instanceable**
 > prims — drives forward kinematics with meshes, applies flat **`UsdShade`
-> material colors** (UsdPreviewSurface / OmniPBR constants), normalizes up-axis &
-> units, seeds the initial pose, and **plays back time-sampled joint
-> trajectories**. The crate reader is a from-scratch TypeScript implementation
-> (no OpenUSD/WASM dependency). Not yet: time samples and variant *selection*
-> stored inside binary crate, and textured materials.
+> material colors** (UsdPreviewSurface / OmniPBR constants) and **diffuse
+> textures** (`UsdUVTexture`), normalizes up-axis & units, seeds the initial
+> pose, and **plays back time-sampled joint trajectories**. The crate reader is a
+> from-scratch TypeScript implementation (no OpenUSD/WASM dependency). Not yet:
+> time samples and variant *selection* stored inside binary crate.
 
 ```ts
 // .usda / .usdc / binary .usd / .usdz are all auto-detected:

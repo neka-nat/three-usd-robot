@@ -8,6 +8,7 @@ import { CrateReader } from "../usd/crate/CrateReader.js";
 import { crateToUsdaFile } from "../usd/crate/toUsdaFile.js";
 import { openUsdz } from "../usd/usdz.js";
 import { bindRobotMeshes } from "./MeshBinding.js";
+import { createTextureProvider } from "./TextureBinding.js";
 import { ThreeUsdRobot, type ThreeUsdRobotOptions } from "./ThreeUsdRobot.js";
 
 export type ThreeUsdRobotLoaderOptions = {
@@ -17,6 +18,8 @@ export type ThreeUsdRobotLoaderOptions = {
   loadVisuals?: boolean;
   /** Render collision meshes (M6). */
   loadCollisions?: boolean;
+  /** Load diffuse textures referenced by materials (default `true`). */
+  loadTextures?: boolean;
   /** Up-axis correction strategy (M9). */
   upAxisConversion?: "auto" | "Y" | "Z" | "none";
   /** Extra uniform scale multiplied with `metersPerUnit` (M9). */
@@ -71,14 +74,19 @@ export class ThreeUsdRobotLoader {
 
   /** Build a robot (composed, with meshes) from USDA source text. */
   async parse(text: string, baseUrl = ""): Promise<ThreeUsdRobot> {
-    return this.buildFromStage(await this.composeStage(text, baseUrl, this.resolver));
+    return this.buildFromStage(
+      await this.composeStage(text, baseUrl, this.resolver),
+      baseUrl,
+      this.resolver,
+    );
   }
 
   /** Build a robot from the bytes of a `.usdz` package. */
   async parseUsdz(bytes: Uint8Array): Promise<ThreeUsdRobot> {
     const pkg = openUsdz(bytes);
     const rootText = await pkg.resolver.fetchText(pkg.rootEntry);
-    return this.buildFromStage(await this.composeStage(rootText, pkg.rootEntry, pkg.resolver));
+    const stage = await this.composeStage(rootText, pkg.rootEntry, pkg.resolver);
+    return this.buildFromStage(stage, pkg.rootEntry, pkg.resolver);
   }
 
   /** Build a robot from the bytes of a binary crate (`.usdc` / binary `.usd`). */
@@ -86,7 +94,7 @@ export class ThreeUsdRobotLoader {
     const file = crateToUsdaFile(new CrateReader(bytes));
     const composeOptions = this.options.onWarn ? { onWarn: this.options.onWarn } : {};
     const composed = await composeFile(file, baseUrl, this.resolver, composeOptions);
-    return this.buildFromStage(Stage.OpenFromFile(composed));
+    return this.buildFromStage(Stage.OpenFromFile(composed), baseUrl, this.resolver);
   }
 
   /** Parse + compose USDA source into the Three.js-independent robot IR. */
@@ -95,7 +103,7 @@ export class ThreeUsdRobotLoader {
     return extractRobotDescription(stage, this.extractOptions());
   }
 
-  private buildFromStage(stage: Stage): ThreeUsdRobot {
+  private buildFromStage(stage: Stage, baseUrl: string, resolver: AssetResolver): ThreeUsdRobot {
     const robot = extractRobotDescription(stage, this.extractOptions());
     const tree = buildKinematicTree(robot);
     const robot3d = new ThreeUsdRobot(robot, tree, this.robotOptions());
@@ -103,7 +111,13 @@ export class ThreeUsdRobotLoader {
     const loadVisuals = this.options.loadVisuals ?? true;
     const loadCollisions = this.options.loadCollisions ?? false;
     if (loadVisuals || loadCollisions) {
-      bindRobotMeshes(stage, robot3d, robot, { loadVisuals, loadCollisions });
+      const textureProvider =
+        (this.options.loadTextures ?? true) ? createTextureProvider(resolver, baseUrl) : undefined;
+      bindRobotMeshes(stage, robot3d, robot, {
+        loadVisuals,
+        loadCollisions,
+        ...(textureProvider ? { textureProvider } : {}),
+      });
     }
     return robot3d;
   }

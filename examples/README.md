@@ -14,7 +14,8 @@ npm run dev
   exposes a `lil-gui` slider per joint (via `three-usd-robot/extras`), and shows
   joint-axis helpers. Load any other asset with `?asset=<url>` (`.usda`/`.usdc`/
   binary `.usd`/`.usdz` are auto-detected) — e.g. `?asset=/arm_anim.usda` shows
-  the **animation playback** controls (a play toggle + time slider).
+  the **animation playback** controls (a play toggle + time slider), or
+  `?asset=/textured_quad.usda` for a **textured** material (`UsdUVTexture`).
 - **vite-basic-viewer** — minimal load-and-pose viewer.
 
 The loader normalizes up-axis and units, so assets appear upright with no manual
