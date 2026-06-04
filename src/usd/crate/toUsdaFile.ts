@@ -128,12 +128,20 @@ function buildRelationship(
   };
 }
 
+const ARC_FIELDS = ["references", "payload", "payloads", "inherits", "specializes"];
+
 function buildPrimMetadata(crate: CrateReader, fm: Map<string, bigint>): MetadataMap {
   const meta: MetadataMap = {};
   const apiSchemas = fm.has("apiSchemas") ? crate.getValue(fm.get("apiSchemas")!) : undefined;
   if (Array.isArray(apiSchemas)) meta.apiSchemas = apiSchemas as UsdValue[];
   const kind = asString(crate, fm.get("kind"));
   if (kind !== undefined) meta.kind = kind;
+  // Composition arcs (references / payloads / inherits) for the M8 composer.
+  for (const key of ARC_FIELDS) {
+    if (!fm.has(key)) continue;
+    const arcs = crate.getValue(fm.get(key)!);
+    if (Array.isArray(arcs) && arcs.length > 0) meta[key] = arcs as UsdValue[];
+  }
   return meta;
 }
 

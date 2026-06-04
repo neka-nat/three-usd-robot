@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import type * as THREE from "three";
 import { describe, expect, it } from "vitest";
-import { CrateReader, ThreeUsdRobotLoader } from "../src/index.js";
+import { CrateReader, ThreeUsdRobotLoader, createMemoryResolver } from "../src/index.js";
 
 // Integration test against a real binary USDC robot. The asset is large and not
 // committed, so these are skipped when it is absent (e.g. in CI).
@@ -50,5 +50,22 @@ describe.skipIf(!present)("USDC crate reader (data/torobo2)", () => {
       if ((o as THREE.Mesh).isMesh) meshes++;
     });
     expect(meshes).toBeGreaterThan(0);
+  });
+
+  it("composes the binary crate when referenced from another layer", async () => {
+    // A USDA layer that references the binary robot — exercises crate-as-external
+    // reference + relationship-path remapping.
+    const resolver = createMemoryResolver({ "/lib/torobo2.usd": bytes });
+    const root = `#usda 1.0
+(defaultPrim = "Cell")
+def Xform "Cell" ( prepend references = @./lib/torobo2.usd@</torobo2> ) {}`;
+    const robot = await new ThreeUsdRobotLoader({ assetResolver: resolver }).parse(
+      root,
+      "/root.usda",
+    );
+    expect(robot.getJointNames().length).toBeGreaterThan(10);
+    // A joint's bodies resolve to remapped links (not the original /torobo2/...).
+    const sample = robot.getJoints().find((j) => j.parent && j.child);
+    expect(sample?.parent).not.toContain("torobo2");
   });
 });

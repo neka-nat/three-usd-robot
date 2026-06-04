@@ -3,7 +3,7 @@ import { extractRobotDescription } from "../robot/RobotExtractor.js";
 import { buildKinematicTree } from "../robot/buildKinematicTree.js";
 import { type AssetResolver, DefaultAssetResolver } from "../usd/AssetResolver.js";
 import { Stage } from "../usd/Stage.js";
-import { composeLayer } from "../usd/composition.js";
+import { composeFile, composeLayer } from "../usd/composition.js";
 import { CrateReader } from "../usd/crate/CrateReader.js";
 import { crateToUsdaFile } from "../usd/crate/toUsdaFile.js";
 import { openUsdz } from "../usd/usdz.js";
@@ -59,7 +59,7 @@ export class ThreeUsdRobotLoader {
     }
     // Fetch bytes so we can detect a binary crate (`.usd` may be USDC or USDA).
     const bytes = await this.fetchRootBytes(url);
-    if (CrateReader.isCrate(bytes)) return this.parseCrate(bytes);
+    if (CrateReader.isCrate(bytes)) return this.parseCrate(bytes, url);
     return this.parse(new TextDecoder().decode(bytes), url);
   }
 
@@ -82,9 +82,11 @@ export class ThreeUsdRobotLoader {
   }
 
   /** Build a robot from the bytes of a binary crate (`.usdc` / binary `.usd`). */
-  parseCrate(bytes: Uint8Array): Promise<ThreeUsdRobot> {
+  async parseCrate(bytes: Uint8Array, baseUrl = ""): Promise<ThreeUsdRobot> {
     const file = crateToUsdaFile(new CrateReader(bytes));
-    return Promise.resolve(this.buildFromStage(Stage.OpenFromFile(file)));
+    const composeOptions = this.options.onWarn ? { onWarn: this.options.onWarn } : {};
+    const composed = await composeFile(file, baseUrl, this.resolver, composeOptions);
+    return this.buildFromStage(Stage.OpenFromFile(composed));
   }
 
   /** Parse + compose USDA source into the Three.js-independent robot IR. */

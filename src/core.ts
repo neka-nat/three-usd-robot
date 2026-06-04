@@ -51,7 +51,7 @@ export {
   DefaultAssetResolver,
   joinPosix,
 } from "./usd/AssetResolver.js";
-export { type ComposeOptions, composeLayer } from "./usd/composition.js";
+export { type ComposeOptions, composeFile, composeLayer } from "./usd/composition.js";
 export { openUsdz, type UsdzPackage } from "./usd/usdz.js";
 export { CrateReader } from "./usd/crate/CrateReader.js";
 export { crateToUsdaFile } from "./usd/crate/toUsdaFile.js";

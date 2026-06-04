@@ -8,15 +8,16 @@ Think of it as a **USD version of [`urdf-loader`](https://www.npmjs.com/package/
 it reads the link / joint / xform / mesh structure out of `UsdPhysics` robot assets
 and drives forward kinematics on a Three.js `Object3D` hierarchy.
 
-> 🚧 **Status: v0.2 + USDC.** Loads **ASCII `.usda`**, **binary `.usdc` / `.usd`
-> (crate)**, and **`.usdz`** robots — including multi-file assets via
-> references/payloads/sublayers, **variant selections**, and **instanceable**
-> prims (internal-reference prototypes) — drives forward kinematics with meshes,
-> applies flat **`UsdShade` material colors** (UsdPreviewSurface / OmniPBR
-> constants), normalizes up-axis & units, seeds the initial pose, and **plays
-> back time-sampled joint trajectories**. The crate reader is a from-scratch
-> TypeScript implementation (no OpenUSD/WASM dependency). Not yet: time samples
-> inside binary crate, and variant resolution inside binary crate.
+> 🚧 **Status: v0.3.** Loads **ASCII `.usda`**, **binary `.usdc` / `.usd`
+> (crate)**, and **`.usdz`** robots — including **multi-file assets** via
+> references / payloads / sublayers (resolved across `.usda` *and* binary layers,
+> with relationship-path remapping), **variant selections**, and **instanceable**
+> prims — drives forward kinematics with meshes, applies flat **`UsdShade`
+> material colors** (UsdPreviewSurface / OmniPBR constants), normalizes up-axis &
+> units, seeds the initial pose, and **plays back time-sampled joint
+> trajectories**. The crate reader is a from-scratch TypeScript implementation
+> (no OpenUSD/WASM dependency). Not yet: time samples and variant *selection*
+> stored inside binary crate, and textured materials.
 
 ```ts
 // .usda / .usdc / binary .usd / .usdz are all auto-detected:

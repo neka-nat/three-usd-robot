@@ -127,3 +127,35 @@ describe("loader composition integration", () => {
     expect(baseMeshes).toHaveLength(1); // referenced mesh rendered under base_link
   });
 });
+
+describe("referencing a robot subtree (path remapping)", () => {
+  // An external robot whose joint targets are absolute paths under /arm.
+  const ARM = `#usda 1.0
+(defaultPrim = "arm")
+def Xform "arm"
+{
+    def Xform "base" ( prepend apiSchemas = ["PhysicsRigidBodyAPI"] ) {}
+    def Xform "tip" ( prepend apiSchemas = ["PhysicsRigidBodyAPI"] ) {}
+    def PhysicsRevoluteJoint "j"
+    {
+        uniform token physics:axis = "Z"
+        rel physics:body0 = </arm/base>
+        rel physics:body1 = </arm/tip>
+    }
+}`;
+
+  it("rebases relationship targets into the referencing namespace", async () => {
+    const resolver = createMemoryResolver({ "/lib/arm.usda": ARM });
+    const root = `#usda 1.0
+def Xform "Cell" ( prepend references = @./lib/arm.usda@</arm> ) {}`;
+    const stage = Stage.OpenFromFile(await composeLayer(root, "/root.usda", resolver));
+
+    // body0/body1, originally </arm/base>, now point under /Cell.
+    expect(stage.GetPrimAtPath("/Cell/j")?.GetRelationship("physics:body0").GetTargets()).toEqual([
+      "/Cell/base",
+    ]);
+    const robot = extractRobotDescription(stage);
+    expect(robot.joints.j?.parent).toBe("base");
+    expect(robot.joints.j?.child).toBe("tip");
+  });
+});

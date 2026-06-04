@@ -25,6 +25,8 @@ import {
 } from "../parser/ast.js";
 import { parseUsda } from "../parser/parseUsda.js";
 import type { AssetResolver } from "./AssetResolver.js";
+import { CrateReader } from "./crate/CrateReader.js";
+import { crateToUsdaFile } from "./crate/toUsdaFile.js";
 
 export type ComposeOptions = {
   onWarn?: (message: string) => void;
@@ -51,6 +53,7 @@ type Ctx = {
   resolving: ReadonlySet<string>;
 };
 
+/** Parse USDA text and fully compose it. */
 export async function composeLayer(
   text: string,
   baseUrl: string,
@@ -58,8 +61,18 @@ export async function composeLayer(
   options: ComposeOptions = {},
   stack: ReadonlySet<string> = new Set(),
 ): Promise<UsdaFile> {
+  return composeFile(parseUsda(text), baseUrl, resolver, options, stack);
+}
+
+/** Compose an already-parsed layer (used by the binary-crate path too). */
+export async function composeFile(
+  file: UsdaFile,
+  baseUrl: string,
+  resolver: AssetResolver,
+  options: ComposeOptions = {},
+  stack: ReadonlySet<string> = new Set(),
+): Promise<UsdaFile> {
   const warn = options.onWarn ?? (() => {});
-  const file = parseUsda(text);
 
   // Sublayers (weaker than this layer). Listed strongest-first; fold weakest-up.
   let weak: PrimSpec[] = [];
@@ -80,13 +93,15 @@ export async function composeLayer(
   };
 
   const resolved: PrimSpec[] = [];
-  for (const prim of file.prims) resolved.push(await resolvePrim(prim, ctx));
+  for (const prim of file.prims) resolved.push(await resolvePrim(prim, "", ctx));
 
   const prims = weak.length > 0 ? mergePrimLists(weak, resolved) : resolved;
   return { version: file.version, metadata: stripKeys(file.metadata, STRIP_KEYS), prims };
 }
 
-async function resolvePrim(spec: PrimSpec, ctx: Ctx): Promise<PrimSpec> {
+async function resolvePrim(spec: PrimSpec, parentPath: string, ctx: Ctx): Promise<PrimSpec> {
+  const path = `${parentPath}/${spec.name}`;
+
   // 1. Graft the selected variant content (weaker than direct opinions).
   let properties = spec.properties;
   let children = spec.children;
@@ -102,7 +117,7 @@ async function resolvePrim(spec: PrimSpec, ctx: Ctx): Promise<PrimSpec> {
 
   // 2. Resolve children (their own arcs/variants).
   const resolvedChildren: PrimSpec[] = [];
-  for (const child of children) resolvedChildren.push(await resolvePrim(child, ctx));
+  for (const child of children) resolvedChildren.push(await resolvePrim(child, path, ctx));
 
   const local: PrimSpec = {
     specifier: spec.specifier,
@@ -118,13 +133,17 @@ async function resolvePrim(spec: PrimSpec, ctx: Ctx): Promise<PrimSpec> {
   const arcs = ARC_KEYS.flatMap((k) => toArcs(spec.metadata[k]));
   let base: PrimSpec | null = null;
   for (const arc of arcs) {
-    const target = await loadReferencedPrim(arc, ctx);
+    const target = await loadReferencedPrim(arc, ctx, path);
     if (target) base = base ? mergePrim(target, base) : target;
   }
   return base ? mergePrim(base, local) : local;
 }
 
-async function loadReferencedPrim(arc: CompositionArc, ctx: Ctx): Promise<PrimSpec | null> {
+async function loadReferencedPrim(
+  arc: CompositionArc,
+  ctx: Ctx,
+  destPath: string,
+): Promise<PrimSpec | null> {
   if (arc.assetPath) {
     const composed = await loadExternalFile(
       arc,
@@ -144,7 +163,10 @@ async function loadReferencedPrim(arc: CompositionArc, ctx: Ctx): Promise<PrimSp
       );
       return null;
     }
-    return target; // external targets are already fully composed
+    // External targets are fully composed; remap their internal paths into the
+    // referencing namespace so relationship targets (body0/body1, ...) resolve.
+    const sourceRoot = arc.primPath ?? `/${target.name}`;
+    return remapPaths(target, sourceRoot, destPath);
   }
 
   // Internal arc: a `</Path>` within this layer (used by instanceable prototypes).
@@ -158,7 +180,12 @@ async function loadReferencedPrim(arc: CompositionArc, ctx: Ctx): Promise<PrimSp
       ctx.warn(`internal reference target ${arc.primPath} not found`);
       return null;
     }
-    return resolvePrim(target, { ...ctx, resolving: new Set([...ctx.resolving, arc.primPath]) });
+    const parentPath = arc.primPath.slice(0, arc.primPath.lastIndexOf("/"));
+    const composed = await resolvePrim(target, parentPath, {
+      ...ctx,
+      resolving: new Set([...ctx.resolving, arc.primPath]),
+    });
+    return remapPaths(composed, arc.primPath, destPath);
   }
   return null;
 }
@@ -184,14 +211,56 @@ async function loadExternalFile(
     return null;
   }
 
-  let text: string;
+  let bytes: Uint8Array;
   try {
-    text = await resolver.fetchText(url);
+    bytes = await fetchLayerBytes(resolver, url);
   } catch (err) {
     warn(`cannot resolve "${arc.assetPath.path}" -> ${url}: ${(err as Error).message}`);
     return null;
   }
-  return composeLayer(text, url, resolver, options, new Set([...stack, url]));
+  const childStack = new Set([...stack, url]);
+  // External layer may be binary crate (.usdc/.usd) or USDA text.
+  if (CrateReader.isCrate(bytes)) {
+    return composeFile(crateToUsdaFile(new CrateReader(bytes)), url, resolver, options, childStack);
+  }
+  return composeLayer(new TextDecoder().decode(bytes), url, resolver, options, childStack);
+}
+
+/** Fetch raw bytes for a layer, falling back to encoding `fetchText`. */
+async function fetchLayerBytes(resolver: AssetResolver, url: string): Promise<Uint8Array> {
+  if (resolver.fetchBytes) return resolver.fetchBytes(url);
+  return new TextEncoder().encode(await resolver.fetchText(url));
+}
+
+// --- path remapping (rebase a referenced subtree into a new namespace) -----
+
+/** Deep-copy a prim subtree, rewriting SdfPath targets from `from` to `to`. */
+function remapPaths(prim: PrimSpec, from: string, to: string): PrimSpec {
+  if (from === to) return prim;
+  return {
+    ...prim,
+    properties: prim.properties.map((p) => remapProperty(p, from, to)),
+    children: prim.children.map((c) => remapPaths(c, from, to)),
+  };
+}
+
+function remapProperty(prop: PropertySpec, from: string, to: string): PropertySpec {
+  if (prop.kind === "relationship") {
+    return { ...prop, targets: prop.targets.map((t) => remapPath(t, from, to)) };
+  }
+  if (prop.kind === "attribute" && prop.connections) {
+    return { ...prop, connections: prop.connections.map((c) => remapPath(c, from, to)) };
+  }
+  return prop;
+}
+
+function remapPath(path: string, from: string, to: string): string {
+  if (path === from) return to;
+  // Prim child (`/`), property (`.`) or relationship-target/variant (`[`,`{`) suffix.
+  if (path.startsWith(from) && /[/.[{]/.test(path[from.length] ?? "")) {
+    return to + path.slice(from.length);
+  }
+  return path;
 }
 
 // --- merge (weaker `base` under stronger `over`) ---------------------------

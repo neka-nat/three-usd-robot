@@ -37,16 +37,26 @@ export class DefaultAssetResolver implements AssetResolver {
   }
 }
 
-/** Resolver over an in-memory `{ path: contents }` map, with posix-style joins. */
-export function createMemoryResolver(files: Record<string, string>): AssetResolver {
+/**
+ * Resolver over an in-memory `{ path: contents }` map (text or bytes), with
+ * posix-style joins. Useful for tests and bundled assets.
+ */
+export function createMemoryResolver(files: Record<string, string | Uint8Array>): AssetResolver {
+  const decoder = new TextDecoder();
+  const encoder = new TextEncoder();
   return {
     resolve(assetPath, baseUrl) {
       return joinPosix(baseUrl, assetPath);
     },
     fetchText(url) {
-      const text = files[url];
-      if (text === undefined) return Promise.reject(new Error(`asset not found: ${url}`));
-      return Promise.resolve(text);
+      const v = files[url];
+      if (v === undefined) return Promise.reject(new Error(`asset not found: ${url}`));
+      return Promise.resolve(typeof v === "string" ? v : decoder.decode(v));
+    },
+    fetchBytes(url) {
+      const v = files[url];
+      if (v === undefined) return Promise.reject(new Error(`asset not found: ${url}`));
+      return Promise.resolve(typeof v === "string" ? encoder.encode(v) : v);
     },
   };
 }

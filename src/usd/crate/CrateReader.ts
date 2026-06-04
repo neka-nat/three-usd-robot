@@ -7,7 +7,14 @@
  * binding to OpenUSD.
  */
 
-import { AssetPath, Quat, UsdMatrix, type UsdValue, type Vec3 } from "../../parser/ast.js";
+import {
+  AssetPath,
+  type CompositionArc,
+  Quat,
+  UsdMatrix,
+  type UsdValue,
+  type Vec3,
+} from "../../parser/ast.js";
 import { decodeIntegers32 } from "./integerCompression.js";
 import { fastDecompress } from "./lz4.js";
 import { CrateType, ListOpBits, decodeRepBits, halfToFloat } from "./valueTypes.js";
@@ -410,6 +417,10 @@ export class CrateReader {
         return this.readListOp(off, "token");
       case CrateType.PathListOp:
         return this.readListOp(off, "path");
+      case CrateType.ReferenceListOp:
+        return this.readArcListOp(off, true);
+      case CrateType.PayloadListOp:
+        return this.readArcListOp(off, false);
       case CrateType.TokenVector:
         return this.readIndexVector(off, "token").items;
       case CrateType.PathVector:
@@ -523,6 +534,45 @@ export class CrateReader {
     if (bits & ListOpBits.HasDeleted) read([]);
     if (bits & ListOpBits.HasOrdered) read([]);
     return [...explicit, ...prepended, ...added, ...appended];
+  }
+
+  /**
+   * Read a Reference/Payload list-op into composition arcs. Each item is
+   * `[assetPath: string-index][primPath: path-index][layerOffset: 2 doubles]`,
+   * and a Reference additionally carries a (usually empty) customData dict.
+   */
+  private readArcListOp(off: number, isReference: boolean): CompositionArc[] {
+    const bits = this.bytes[off]!;
+    let p = off + 1;
+    const out: CompositionArc[] = [];
+
+    const readList = (collect: boolean) => {
+      const count = this.u64(p);
+      p += 8;
+      for (let i = 0; i < count; i++) {
+        const assetStrIndex = this.view.getUint32(p, true);
+        p += 4;
+        const primPathIndex = this.view.getInt32(p, true);
+        p += 4;
+        p += 16; // SdfLayerOffset: offset + scale (two doubles)
+        if (isReference) p += 8; // customData dict count (assumed empty)
+        if (!collect) continue;
+        const assetPath = this.getToken(this.getStrings()[assetStrIndex] ?? -1);
+        const primPath = this.getPaths()[primPathIndex] ?? "";
+        const arc: CompositionArc = { assetPath: new AssetPath(assetPath) };
+        if (primPath) arc.primPath = primPath;
+        out.push(arc);
+      }
+    };
+
+    // Read order matches the writer: explicit, added, prepended, appended, deleted, ordered.
+    if (bits & ListOpBits.HasExplicit) readList(true);
+    if (bits & ListOpBits.HasAdded) readList(true);
+    if (bits & ListOpBits.HasPrepended) readList(true);
+    if (bits & ListOpBits.HasAppended) readList(true);
+    if (bits & ListOpBits.HasDeleted) readList(false);
+    if (bits & ListOpBits.HasOrdered) readList(false);
+    return out;
   }
 }
 
