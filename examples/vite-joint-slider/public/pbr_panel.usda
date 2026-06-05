@@ -1,0 +1,82 @@
+#usda 1.0
+(
+    defaultPrim = "World"
+    upAxis = "Z"
+    metersPerUnit = 1.0
+    doc = "A PBR panel — demonstrates UsdPreviewSurface normal/roughness/metallic maps."
+)
+
+def Xform "World" ( prepend apiSchemas = ["PhysicsArticulationRootAPI"] )
+{
+    def Scope "Looks"
+    {
+        def Material "Panel"
+        {
+            token outputs:surface.connect = </World/Looks/Panel/Surface.outputs:surface>
+            def Shader "Surface"
+            {
+                uniform token info:id = "UsdPreviewSurface"
+                color3f inputs:diffuseColor.connect = </World/Looks/Panel/Color.outputs:rgb>
+                normal3f inputs:normal.connect = </World/Looks/Panel/Normal.outputs:rgb>
+                float inputs:roughness.connect = </World/Looks/Panel/Rough.outputs:r>
+                float inputs:metallic.connect = </World/Looks/Panel/Metal.outputs:r>
+                token outputs:surface
+            }
+            def Shader "Color"
+            {
+                uniform token info:id = "UsdUVTexture"
+                asset inputs:file = @./textures/panel_color.png@
+                float2 inputs:st.connect = </World/Looks/Panel/uv.outputs:result>
+                token outputs:rgb
+            }
+            def Shader "Normal"
+            {
+                uniform token info:id = "UsdUVTexture"
+                asset inputs:file = @./textures/panel_normal.png@
+                token inputs:sourceColorSpace = "raw"
+                float2 inputs:st.connect = </World/Looks/Panel/uv.outputs:result>
+                token outputs:rgb
+            }
+            def Shader "Rough"
+            {
+                uniform token info:id = "UsdUVTexture"
+                asset inputs:file = @./textures/panel_rough.png@
+                token inputs:sourceColorSpace = "raw"
+                float2 inputs:st.connect = </World/Looks/Panel/uv.outputs:result>
+                token outputs:r
+            }
+            def Shader "Metal"
+            {
+                uniform token info:id = "UsdUVTexture"
+                asset inputs:file = @./textures/panel_metal.png@
+                token inputs:sourceColorSpace = "raw"
+                float2 inputs:st.connect = </World/Looks/Panel/uv.outputs:result>
+                token outputs:r
+            }
+            def Shader "uv"
+            {
+                uniform token info:id = "UsdPrimvarReader_float2"
+                token inputs:varname = "st"
+                float2 outputs:result
+            }
+        }
+    }
+
+    def Xform "panel_link" ( prepend apiSchemas = ["PhysicsRigidBodyAPI"] )
+    {
+        def Mesh "geom"
+        {
+            rel material:binding = </World/Looks/Panel>
+            int[] faceVertexCounts = [4]
+            int[] faceVertexIndices = [0, 1, 2, 3]
+            point3f[] points = [(-1, 0, 0), (1, 0, 0), (1, 0, 2), (-1, 0, 2)]
+            texCoord2f[] primvars:st = [(0, 0), (1, 0), (1, 1), (0, 1)]
+            uniform bool doubleSided = true
+        }
+    }
+
+    def PhysicsFixedJoint "root_joint"
+    {
+        rel physics:body1 = </World/panel_link>
+    }
+}

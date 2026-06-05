@@ -63,9 +63,11 @@ export function buildMeshGeometry(meshPrim: Prim): THREE.BufferGeometry | null {
 
 /**
  * Build a material for a Mesh prim. Color priority: bound `UsdShade` material
- * (when `stage` is given) → `primvars:displayColor` → default gray. A diffuse
- * texture (via `textures`) becomes `material.map`; metalness / roughness /
- * opacity come from the bound material when present.
+ * (when `stage` is given) → `primvars:displayColor` → default gray. Textures
+ * (via `textures`) become the matching `MeshStandardMaterial` maps — diffuse →
+ * `map` (sRGB), plus `normalMap` / `roughnessMap` / `metalnessMap` / `aoMap`
+ * (linear data) and emissive `emissiveMap`. Metalness / roughness / opacity /
+ * emissive constants come from the bound material when present.
  */
 export function buildMeshMaterial(
   meshPrim: Prim,
@@ -73,8 +75,6 @@ export function buildMeshMaterial(
   textures?: TextureProvider,
 ): THREE.Material {
   const color = new THREE.Color(DEFAULT_COLOR);
-  let metalness = 0.1;
-  let roughness = 0.8;
   let opacity = 1;
 
   const bound = stage ? resolveBoundMaterial(stage, meshPrim) : undefined;
@@ -87,22 +87,46 @@ export function buildMeshMaterial(
       color.setRGB(r, g, b);
     }
   }
-  if (bound?.metalness !== undefined) metalness = bound.metalness;
-  if (bound?.roughness !== undefined) roughness = bound.roughness;
   if (bound?.opacity !== undefined) opacity = bound.opacity;
 
-  const map = bound?.colorTexture && textures ? textures(bound.colorTexture) : null;
+  const tex = (path: string | undefined, cs: "srgb" | "linear") =>
+    path && textures ? textures(path, cs) : null;
+
+  const map = tex(bound?.colorTexture, "srgb");
   if (map) color.setRGB(1, 1, 1); // don't tint the texture
+  const normalMap = tex(bound?.normalTexture, "linear");
+  const roughnessMap = tex(bound?.roughnessTexture, "linear");
+  const metalnessMap = tex(bound?.metalnessTexture, "linear");
+  const aoMap = tex(bound?.occlusionTexture, "linear");
+  const emissiveMap = tex(bound?.emissiveTexture, "srgb");
+
+  // A scalar map without an authored constant should pass the texture through
+  // unattenuated (three multiplies constant × map), so default the factor to 1.
+  const metalness = bound?.metalness ?? (metalnessMap ? 1 : 0.1);
+  const roughness = bound?.roughness ?? (roughnessMap ? 1 : 0.8);
+
+  const emissive = new THREE.Color(0x000000);
+  if (bound?.emissiveColor) {
+    emissive.setRGB(bound.emissiveColor[0], bound.emissiveColor[1], bound.emissiveColor[2]);
+  } else if (emissiveMap) {
+    emissive.setRGB(1, 1, 1); // let the map drive emission
+  }
 
   const doubleSided = meshPrim.GetAttribute("doubleSided").Get() === true;
   return new THREE.MeshStandardMaterial({
     color,
     metalness,
     roughness,
+    emissive,
     transparent: opacity < 1,
     opacity,
     side: doubleSided ? THREE.DoubleSide : THREE.FrontSide,
     ...(map ? { map } : {}),
+    ...(normalMap ? { normalMap } : {}),
+    ...(roughnessMap ? { roughnessMap } : {}),
+    ...(metalnessMap ? { metalnessMap } : {}),
+    ...(aoMap ? { aoMap } : {}),
+    ...(emissiveMap ? { emissiveMap } : {}),
   });
 }
 
