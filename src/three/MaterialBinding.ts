@@ -10,9 +10,36 @@
  * `inputs:normalmap_texture`).
  */
 
-import { AssetPath, type Vec3 } from "../parser/ast.js";
+import { AssetPath, type Vec2, type Vec3 } from "../parser/ast.js";
 import type { Prim } from "../usd/Prim.js";
 import type { Stage } from "../usd/Stage.js";
+
+/** `UsdUVTexture` wrap mode for one axis (`black` ≈ clamp; three has no border). */
+export type TextureWrap = "repeat" | "clamp" | "mirror" | "black";
+
+/** `UsdTransform2d` applied to the `st` coords feeding a texture. */
+export type TextureTransform = {
+  /** `inputs:translation` (UV offset). */
+  translation?: Vec2;
+  /** `inputs:rotation` in degrees (CCW about the origin). */
+  rotation?: number;
+  /** `inputs:scale` (UV tiling). */
+  scale?: Vec2;
+};
+
+/** A resolved texture reference plus its `UsdUVTexture` sampler/transform state. */
+export type ResolvedTexture = {
+  /** Authored asset path of the image. */
+  path: string;
+  wrapS?: TextureWrap;
+  wrapT?: TextureWrap;
+  /** `UsdTransform2d` on the `st` input, if any. */
+  transform?: TextureTransform;
+  /** `inputs:scale` — multiplies the sampled value (folded into material factors). */
+  scale?: [number, number, number, number];
+  /** `inputs:bias` — added to the sampled value. */
+  bias?: [number, number, number, number];
+};
 
 export type ResolvedMaterial = {
   color?: Vec3;
@@ -20,18 +47,25 @@ export type ResolvedMaterial = {
   metalness?: number;
   roughness?: number;
   emissiveColor?: Vec3;
-  /** Authored asset path of the diffuse/albedo texture, if any. */
-  colorTexture?: string;
-  /** Tangent-space normal map asset path, if any. */
-  normalTexture?: string;
-  /** Roughness map asset path, if any. */
-  roughnessTexture?: string;
-  /** Metallic map asset path, if any. */
-  metalnessTexture?: string;
-  /** Ambient-occlusion map asset path, if any. */
-  occlusionTexture?: string;
-  /** Emissive map asset path, if any. */
-  emissiveTexture?: string;
+  /**
+   * `inputs:opacityThreshold`. When `> 0`, opacity is a binary mask (alpha
+   * clip / cutout); when `0`/absent, sub-unit opacity blends translucently.
+   */
+  opacityThreshold?: number;
+  /** Diffuse/albedo texture, if any. */
+  colorTexture?: ResolvedTexture;
+  /** Opacity / alpha texture (may be the same image as `colorTexture`). */
+  opacityTexture?: ResolvedTexture;
+  /** Tangent-space normal map, if any. */
+  normalTexture?: ResolvedTexture;
+  /** Roughness map, if any. */
+  roughnessTexture?: ResolvedTexture;
+  /** Metallic map, if any. */
+  metalnessTexture?: ResolvedTexture;
+  /** Ambient-occlusion map, if any. */
+  occlusionTexture?: ResolvedTexture;
+  /** Emissive map, if any. */
+  emissiveTexture?: ResolvedTexture;
 };
 
 const DIFFUSE_INPUTS = [
@@ -42,6 +76,7 @@ const DIFFUSE_INPUTS = [
   "inputs:baseColor",
 ];
 const OPACITY_INPUTS = ["inputs:opacity", "inputs:opacity_constant"];
+const OPACITY_THRESHOLD_INPUTS = ["inputs:opacityThreshold", "inputs:opacity_threshold"];
 const METALLIC_INPUTS = ["inputs:metallic", "inputs:metallic_constant"];
 const ROUGHNESS_INPUTS = ["inputs:roughness", "inputs:reflection_roughness_constant"];
 const EMISSIVE_INPUTS = ["inputs:emissiveColor", "inputs:emissive_color"];
@@ -56,12 +91,16 @@ const SURFACE_OUTPUTS = ["outputs:surface", "outputs:mdl:surface"];
 type TextureLookup = { surface: string[]; direct: string[] };
 
 const TEXTURE_LOOKUPS: Record<
-  "color" | "normal" | "roughness" | "metalness" | "occlusion" | "emissive",
+  "color" | "opacity" | "normal" | "roughness" | "metalness" | "occlusion" | "emissive",
   TextureLookup
 > = {
   color: {
     surface: ["inputs:diffuseColor"],
     direct: ["inputs:diffuse_texture", "inputs:diffuse_color_texture"],
+  },
+  opacity: {
+    surface: ["inputs:opacity"],
+    direct: ["inputs:opacity_texture", "inputs:opacity_color_texture"],
   },
   normal: {
     surface: ["inputs:normal"],
@@ -99,6 +138,8 @@ export function resolveBoundMaterial(stage: Stage, prim: Prim): ResolvedMaterial
   if (color) result.color = color;
   const opacity = firstNumber(shader, OPACITY_INPUTS);
   if (opacity !== undefined) result.opacity = opacity;
+  const opacityThreshold = firstNumber(shader, OPACITY_THRESHOLD_INPUTS);
+  if (opacityThreshold !== undefined) result.opacityThreshold = opacityThreshold;
   const metalness = firstNumber(shader, METALLIC_INPUTS);
   if (metalness !== undefined) result.metalness = metalness;
   const roughness = firstNumber(shader, ROUGHNESS_INPUTS);
@@ -113,6 +154,8 @@ export function resolveBoundMaterial(stage: Stage, prim: Prim): ResolvedMaterial
 
   const colorTex = findTexture(shader, TEXTURE_LOOKUPS.color);
   if (colorTex !== undefined) result.colorTexture = colorTex;
+  const opacityTex = findTexture(shader, TEXTURE_LOOKUPS.opacity);
+  if (opacityTex !== undefined) result.opacityTexture = opacityTex;
   const normal = findTexture(shader, TEXTURE_LOOKUPS.normal);
   if (normal !== undefined) result.normalTexture = normal;
   const roughTex = findTexture(shader, TEXTURE_LOOKUPS.roughness);
@@ -128,21 +171,69 @@ export function resolveBoundMaterial(stage: Stage, prim: Prim): ResolvedMaterial
 }
 
 /**
- * Resolve a channel's texture asset path: an OmniPBR direct asset input takes
- * precedence, else follow a `UsdPreviewSurface` input's connection to the
- * `UsdUVTexture`'s `inputs:file`.
+ * Resolve a channel's texture: an OmniPBR direct asset input takes precedence
+ * (path only), else follow a `UsdPreviewSurface` input's connection to a
+ * `UsdUVTexture` and read its `inputs:file` plus sampler/transform state.
  */
-function findTexture(shader: Prim, lookup: TextureLookup): string | undefined {
+function findTexture(shader: Prim, lookup: TextureLookup): ResolvedTexture | undefined {
   for (const name of lookup.direct) {
     const v = shader.GetAttribute(name).Get();
-    if (v instanceof AssetPath && v.path) return v.path;
+    if (v instanceof AssetPath && v.path) return { path: v.path };
   }
   for (const name of lookup.surface) {
     const conn = shader.GetAttribute(name).GetConnections()[0];
     if (!conn) continue;
     const texPrim = shader.GetStage().GetPrimAtPath(conn.split(".")[0]!);
-    const file = texPrim?.GetAttribute("inputs:file").Get();
-    if (file instanceof AssetPath && file.path) return file.path;
+    if (!texPrim) continue;
+    const file = texPrim.GetAttribute("inputs:file").Get();
+    if (file instanceof AssetPath && file.path) return readUvTexture(texPrim, file.path);
+  }
+  return undefined;
+}
+
+const WRAP_VALUES = new Set(["repeat", "clamp", "mirror", "black"]);
+
+/** Read a `UsdUVTexture` prim's wrap modes, scale/bias, and `st` transform. */
+function readUvTexture(texPrim: Prim, path: string): ResolvedTexture {
+  const tex: ResolvedTexture = { path };
+
+  const wrapS = texPrim.GetAttribute("inputs:wrapS").Get();
+  if (typeof wrapS === "string" && WRAP_VALUES.has(wrapS)) tex.wrapS = wrapS as TextureWrap;
+  const wrapT = texPrim.GetAttribute("inputs:wrapT").Get();
+  if (typeof wrapT === "string" && WRAP_VALUES.has(wrapT)) tex.wrapT = wrapT as TextureWrap;
+
+  const scale = numArray(texPrim, "inputs:scale", 4);
+  if (scale) tex.scale = scale as [number, number, number, number];
+  const bias = numArray(texPrim, "inputs:bias", 4);
+  if (bias) tex.bias = bias as [number, number, number, number];
+
+  const transform = readTransform2d(texPrim);
+  if (transform) tex.transform = transform;
+  return tex;
+}
+
+/** Follow `inputs:st` to a `UsdTransform2d` node and read its translate/rotate/scale. */
+function readTransform2d(texPrim: Prim): TextureTransform | undefined {
+  const conn = texPrim.GetAttribute("inputs:st").GetConnections()[0];
+  if (!conn) return undefined;
+  const node = texPrim.GetStage().GetPrimAtPath(conn.split(".")[0]!);
+  if (!node || node.GetAttribute("info:id").Get() !== "UsdTransform2d") return undefined;
+
+  const transform: TextureTransform = {};
+  const translation = numArray(node, "inputs:translation", 2);
+  if (translation) transform.translation = translation as Vec2;
+  const scale = numArray(node, "inputs:scale", 2);
+  if (scale) transform.scale = scale as Vec2;
+  const rotation = node.GetAttribute("inputs:rotation").Get();
+  if (typeof rotation === "number") transform.rotation = rotation;
+  return Object.keys(transform).length > 0 ? transform : undefined;
+}
+
+/** Read a numeric attribute as a fixed-length array, or `undefined`. */
+function numArray(prim: Prim, name: string, length: number): number[] | undefined {
+  const v = prim.GetAttribute(name).Get();
+  if (Array.isArray(v) && v.length >= length && v.every((n) => typeof n === "number")) {
+    return (v as number[]).slice(0, length);
   }
   return undefined;
 }

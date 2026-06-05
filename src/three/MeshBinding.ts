@@ -15,7 +15,7 @@ import type { RobotDescription } from "../robot/RobotDescription.js";
 import type { Prim } from "../usd/Prim.js";
 import type { Stage } from "../usd/Stage.js";
 import { computeLocalTransform } from "../usd/xformOps.js";
-import { resolveBoundMaterial } from "./MaterialBinding.js";
+import { type ResolvedTexture, resolveBoundMaterial } from "./MaterialBinding.js";
 import type { TextureProvider } from "./TextureBinding.js";
 import type { ThreeUsdRobot } from "./ThreeUsdRobot.js";
 
@@ -89,21 +89,38 @@ export function buildMeshMaterial(
   }
   if (bound?.opacity !== undefined) opacity = bound.opacity;
 
-  const tex = (path: string | undefined, cs: "srgb" | "linear") =>
-    path && textures ? textures(path, cs) : null;
+  // Resolve a channel's `THREE.Texture`, forwarding its wrap modes and
+  // `UsdTransform2d` (the `UsdUVTexture.inputs:scale`/`bias` are folded into the
+  // material factors below, not the sampler).
+  const tex = (rt: ResolvedTexture | undefined, cs: "srgb" | "linear") =>
+    rt && textures
+      ? textures(rt.path, {
+          colorSpace: cs,
+          ...(rt.wrapS ? { wrapS: rt.wrapS } : {}),
+          ...(rt.wrapT ? { wrapT: rt.wrapT } : {}),
+          ...(rt.transform ? { transform: rt.transform } : {}),
+        })
+      : null;
 
   const map = tex(bound?.colorTexture, "srgb");
-  if (map) color.setRGB(1, 1, 1); // don't tint the texture
+  // `inputs:scale` on the diffuse texture tints the map; otherwise pass through.
+  if (map) {
+    const s = bound?.colorTexture?.scale;
+    if (s) color.setRGB(s[0], s[1], s[2]);
+    else color.setRGB(1, 1, 1);
+  }
   const normalMap = tex(bound?.normalTexture, "linear");
   const roughnessMap = tex(bound?.roughnessTexture, "linear");
   const metalnessMap = tex(bound?.metalnessTexture, "linear");
   const aoMap = tex(bound?.occlusionTexture, "linear");
   const emissiveMap = tex(bound?.emissiveTexture, "srgb");
 
-  // A scalar map without an authored constant should pass the texture through
-  // unattenuated (three multiplies constant × map), so default the factor to 1.
-  const metalness = bound?.metalness ?? (metalnessMap ? 1 : 0.1);
-  const roughness = bound?.roughness ?? (roughnessMap ? 1 : 0.8);
+  // A scalar map's `inputs:scale[0]` (or an authored constant) becomes three's
+  // factor; three multiplies factor × map, so default to 1 to pass it through.
+  const metalness =
+    bound?.metalness ?? bound?.metalnessTexture?.scale?.[0] ?? (metalnessMap ? 1 : 0.1);
+  const roughness =
+    bound?.roughness ?? bound?.roughnessTexture?.scale?.[0] ?? (roughnessMap ? 1 : 0.8);
 
   const emissive = new THREE.Color(0x000000);
   if (bound?.emissiveColor) {
@@ -112,16 +129,32 @@ export function buildMeshMaterial(
     emissive.setRGB(1, 1, 1); // let the map drive emission
   }
 
+  // Opacity sourcing: a dedicated opacity texture → `alphaMap`; an opacity input
+  // wired to the *same* image as the diffuse map → that map's own alpha channel
+  // (no separate map needed). `opacityThreshold > 0` means alpha clip (a binary
+  // cutout rendered in the opaque pass); otherwise sub-unit alpha blends.
+  const opacityTex = bound?.opacityTexture;
+  const sharesColorMap = !!(opacityTex && opacityTex.path === bound?.colorTexture?.path);
+  const alphaMap = sharesColorMap ? null : tex(opacityTex, "linear");
+  const hasAlphaSource = opacity < 1 || sharesColorMap || !!alphaMap;
+  const threshold = bound?.opacityThreshold;
+  const alphaTest = threshold !== undefined && threshold > 0 ? threshold : 0;
+  // Alpha-clip masks render opaque (depth-written, discarded below the cutoff);
+  // only true translucency uses the transparent/blended pass.
+  const transparent = alphaTest === 0 && hasAlphaSource;
+
   const doubleSided = meshPrim.GetAttribute("doubleSided").Get() === true;
   return new THREE.MeshStandardMaterial({
     color,
     metalness,
     roughness,
     emissive,
-    transparent: opacity < 1,
+    transparent,
     opacity,
+    ...(alphaTest > 0 ? { alphaTest } : {}),
     side: doubleSided ? THREE.DoubleSide : THREE.FrontSide,
     ...(map ? { map } : {}),
+    ...(alphaMap ? { alphaMap } : {}),
     ...(normalMap ? { normalMap } : {}),
     ...(roughnessMap ? { roughnessMap } : {}),
     ...(metalnessMap ? { metalnessMap } : {}),

@@ -28,12 +28,14 @@ export function openUsdz(bytes: Uint8Array): UsdzPackage {
   if (!rootEntry) throw new Error("usdz package contains no entries");
 
   const decoder = new TextDecoder();
+  const entryBytes = (url: string): Uint8Array | undefined =>
+    entries[url] ?? entries[url.replace(/^\/+/, "")];
   const resolver: AssetResolver = {
     resolve(assetPath, baseUrl) {
       return joinPosix(baseUrl, assetPath);
     },
     fetchText(url) {
-      const data = entries[url] ?? entries[url.replace(/^\/+/, "")];
+      const data = entryBytes(url);
       if (!data) return Promise.reject(new Error(`not found in usdz: ${url}`));
       if (/\.usdc$/i.test(url)) {
         return Promise.reject(
@@ -41,6 +43,12 @@ export function openUsdz(bytes: Uint8Array): UsdzPackage {
         );
       }
       return Promise.resolve(decoder.decode(data));
+    },
+    // Serve raw entry bytes so embedded textures decode through the same path.
+    fetchBytes(url) {
+      const data = entryBytes(url);
+      if (!data) return Promise.reject(new Error(`not found in usdz: ${url}`));
+      return Promise.resolve(data);
     },
   };
 

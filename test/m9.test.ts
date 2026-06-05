@@ -127,4 +127,59 @@ def Xform "geom_root"
       .children.filter((c) => (c as { isMesh?: boolean }).isMesh);
     expect(meshes).toHaveLength(1); // referenced mesh pulled from another zip entry
   });
+
+  // A package whose material references a texture stored as another zip entry.
+  const TEXTURED = `#usda 1.0
+(defaultPrim = "World")
+def Xform "World"
+{
+    def Scope "Looks"
+    {
+        def Material "Mat"
+        {
+            token outputs:surface.connect = </World/Looks/Mat/S.outputs:surface>
+            def Shader "S"
+            {
+                uniform token info:id = "UsdPreviewSurface"
+                color3f inputs:diffuseColor.connect = </World/Looks/Mat/T.outputs:rgb>
+                token outputs:surface
+            }
+            def Shader "T"
+            {
+                uniform token info:id = "UsdUVTexture"
+                asset inputs:file = @./tex/albedo.png@
+                token outputs:rgb
+            }
+        }
+    }
+    def Xform "base_link" ( prepend apiSchemas = ["PhysicsRigidBodyAPI"] )
+    {
+        def Mesh "geom"
+        {
+            rel material:binding = </World/Looks/Mat>
+            int[] faceVertexCounts = [3]
+            int[] faceVertexIndices = [0, 1, 2]
+            point3f[] points = [(0,0,0), (1,0,0), (0,1,0)]
+            texCoord2f[] primvars:st = [(0,0), (1,0), (0,1)]
+        }
+    }
+    def PhysicsFixedJoint "root_joint" { rel physics:body1 = </World/base_link> }
+}`;
+
+  it("binds a material map from a texture embedded in the package", async () => {
+    // The "png" bytes are never decoded here (no DOM); we assert the wiring:
+    // the usdz resolver + texture provider attach a map to the bound material.
+    const bytes = zipSync({
+      "scene.usda": strToU8(TEXTURED),
+      "tex/albedo.png": new Uint8Array([0x89, 0x50, 0x4e, 0x47]),
+    });
+    const robot = await new ThreeUsdRobotLoader({ upAxisConversion: "none" }).parseUsdz(bytes);
+
+    const mesh = robot
+      .getLinkObject("base_link")!
+      .children.find((c) => (c as { isMesh?: boolean }).isMesh) as
+      | { material: { map: unknown } }
+      | undefined;
+    expect(mesh?.material.map).not.toBeNull();
+  });
 });

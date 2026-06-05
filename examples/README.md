@@ -17,7 +17,11 @@ npm run dev
   the **animation playback** controls (a play toggle + time slider),
   `?asset=/textured_quad.usda` for a **textured** material (`UsdUVTexture`), or
   `?asset=/pbr_panel.usda` for a full **PBR** material (diffuse + normal +
-  roughness + metallic maps via `UsdPreviewSurface`).
+  roughness + metallic maps via `UsdPreviewSurface`), or
+  `?asset=/tiled_panel.usdz` for a **USDZ-embedded** texture tiled 4×4 with a
+  `UsdTransform2d` (`wrapS`/`wrapT` + `st` transform), or
+  `?asset=/cutout_panel.usda` for an **alpha-clip** cutout (opacity from the
+  texture's alpha + `opacityThreshold`).
 - **vite-basic-viewer** — a **React Three Fiber** viewer: `<UsdRobot>` from
   `three-usd-robot/react` inside a `<Canvas>`, with drei `OrbitControls` / `Grid`
   / `Bounds` (auto-frame). Also accepts `?asset=<url>`.
