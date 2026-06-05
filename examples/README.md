@@ -16,7 +16,9 @@ npm run dev
   binary `.usd`/`.usdz` are auto-detected) — e.g. `?asset=/arm_anim.usda` shows
   the **animation playback** controls (a play toggle + time slider), or
   `?asset=/textured_quad.usda` for a **textured** material (`UsdUVTexture`).
-- **vite-basic-viewer** — minimal load-and-pose viewer.
+- **vite-basic-viewer** — a **React Three Fiber** viewer: `<UsdRobot>` from
+  `three-usd-robot/react` inside a `<Canvas>`, with drei `OrbitControls` / `Grid`
+  / `Bounds` (auto-frame). Also accepts `?asset=<url>`.
 
 The loader normalizes up-axis and units, so assets appear upright with no manual
 rotation. `public/arm_anim.usda` is the arm with time-sampled joint drives,

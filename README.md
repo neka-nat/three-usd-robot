@@ -93,6 +93,34 @@ if (robot.hasAnimation()) {
 }
 ```
 
+### React Three Fiber
+
+`three-usd-robot/react` provides a declarative `<UsdRobot>` for R3F (`react` and
+`@react-three/fiber` are **optional** peer deps):
+
+```tsx
+import { Canvas } from "@react-three/fiber";
+import { Suspense } from "react";
+import { UsdRobot } from "three-usd-robot/react";
+
+<Canvas camera={{ position: [2, 2, 2] }}>
+  <Suspense fallback={null}>
+    <UsdRobot
+      url="/robot.usda"
+      jointValues={{ joint1: 0.4 }} // controlled
+      showJointAxes
+      animate // play time-sampled trajectories
+      onLoad={(robot) => console.log(robot.getJointNames())}
+    />
+  </Suspense>
+  <ambientLight />
+</Canvas>;
+```
+
+Also exported: `useUsdRobot(url)` (Suspense loader), `useRobotAnimation(robot)`
+(per-frame playback), `preloadUsdRobot`, `clearUsdRobotCache`. Pass a `ref` to
+`<UsdRobot>` for the imperative `ThreeUsdRobot` API.
+
 ### Inspect without Three.js
 
 ```ts
@@ -110,6 +138,7 @@ console.log(desc.rootLink, Object.keys(desc.joints));
 | `three-usd-robot/core` | Three.js-independent USDA parser, robot IR, forward-kinematics math |
 | `three-usd-robot/helpers` | Viewer helpers (joint axes, link frames, joint limits) |
 | `three-usd-robot/extras` | Heavier convenience utilities (e.g. joint slider panel) |
+| `three-usd-robot/react` | React Three Fiber `<UsdRobot>` component + hooks (optional `react` / `@react-three/fiber` peers) |
 
 ## Development
 

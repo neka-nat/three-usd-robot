@@ -6,6 +6,7 @@ export default defineConfig({
     core: "src/core.ts",
     helpers: "src/helpers.ts",
     extras: "src/extras.ts",
+    react: "src/react.tsx",
   },
   format: ["esm"],
   dts: true,
@@ -13,6 +14,6 @@ export default defineConfig({
   clean: true,
   treeshake: true,
   target: "es2022",
-  // `three` is a peer dependency; never bundle it into dist.
-  external: ["three"],
+  // Peer dependencies — never bundle these into dist.
+  external: ["three", "react", "react-dom", "react/jsx-runtime", "@react-three/fiber"],
 });

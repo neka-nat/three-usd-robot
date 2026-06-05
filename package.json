@@ -39,6 +39,10 @@
     "./extras": {
       "types": "./dist/extras.d.ts",
       "import": "./dist/extras.js"
+    },
+    "./react": {
+      "types": "./dist/react.d.ts",
+      "import": "./dist/react.js"
     }
   },
   "main": "./dist/index.js",
@@ -55,15 +59,32 @@
     "check": "biome check --write ."
   },
   "peerDependencies": {
+    "@react-three/fiber": ">=8",
+    "react": ">=18",
     "three": ">=0.160.0"
+  },
+  "peerDependenciesMeta": {
+    "react": {
+      "optional": true
+    },
+    "@react-three/fiber": {
+      "optional": true
+    }
   },
   "dependencies": {
     "fflate": "^0.8.2"
   },
   "devDependencies": {
     "@biomejs/biome": "^1.9.4",
+    "@react-three/fiber": "^8.18.0",
     "@types/node": "^20.19.41",
+    "@types/react": "^18.3.30",
+    "@types/react-dom": "^18.3.7",
+    "@types/react-test-renderer": "^18.3.1",
     "@types/three": "^0.171.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-test-renderer": "^18.3.1",
     "three": "^0.171.0",
     "tsup": "^8.3.5",
     "typescript": "^5.7.2",

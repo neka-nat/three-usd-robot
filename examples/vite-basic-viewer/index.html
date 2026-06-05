@@ -3,10 +3,11 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>three-usd-robot — basic viewer</title>
+    <title>three-usd-robot — React Three Fiber viewer</title>
     <style>
       html,
-      body {
+      body,
+      #root {
         margin: 0;
         height: 100%;
         overflow: hidden;
@@ -15,6 +16,7 @@
     </style>
   </head>
   <body>
-    <script type="module" src="/src/main.ts"></script>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

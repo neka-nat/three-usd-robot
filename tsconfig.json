@@ -25,6 +25,8 @@
     "forceConsistentCasingInFileNames": true,
     "noEmit": true,
 
+    "jsx": "react-jsx",
+
     "types": ["vitest/globals", "node"]
   },
   "include": ["src", "test", "*.config.ts"],
