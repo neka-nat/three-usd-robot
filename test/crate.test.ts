@@ -1,7 +1,8 @@
 import { existsSync, readFileSync } from "node:fs";
+import { strToU8, zipSync } from "fflate";
 import type * as THREE from "three";
 import { describe, expect, it } from "vitest";
-import { CrateReader, ThreeUsdRobotLoader, createMemoryResolver } from "../src/index.js";
+import { CrateReader, ThreeUsdRobotLoader, createMemoryResolver, openUsdz } from "../src/index.js";
 
 // Integration test against a real binary USDC robot. The asset is large and not
 // committed, so these are skipped when it is absent (e.g. in CI).
@@ -67,5 +68,39 @@ def Xform "Cell" ( prepend references = @./lib/torobo2.usd@</torobo2> ) {}`;
     // A joint's bodies resolve to remapped links (not the original /torobo2/...).
     const sample = robot.getJoints().find((j) => j.parent && j.child);
     expect(sample?.parent).not.toContain("torobo2");
+  });
+});
+
+describe.skipIf(!present)("USDC inside USDZ (data/torobo2)", () => {
+  it("loads a usdz whose root layer is a binary crate", async () => {
+    const pkg = zipSync({ "torobo2.usd": bytes }, { level: 0 });
+    const robot = await new ThreeUsdRobotLoader().parseUsdz(pkg);
+    expect(robot.getKinematicTree().root).toBeTruthy();
+    expect(robot.getJointNames().length).toBeGreaterThan(10);
+  });
+
+  it("composes a crate entry referenced from a usda root entry", async () => {
+    const root = `#usda 1.0
+(defaultPrim = "Cell")
+def Xform "Cell" ( prepend references = @./lib/torobo2.usd@</torobo2> ) {}`;
+    const pkg = zipSync({ "root.usda": strToU8(root), "lib/torobo2.usd": bytes }, { level: 0 });
+    const robot = await new ThreeUsdRobotLoader().parseUsdz(pkg);
+    expect(robot.getJointNames().length).toBeGreaterThan(10);
+  });
+});
+
+describe("usdz resolver with binary crate entries", () => {
+  // Only the resolver is exercised, so the crate magic alone is enough.
+  const fakeCrate = new Uint8Array([...strToU8("PXR-USDC"), 0, 0, 0, 0, 0, 0, 0, 0]);
+
+  it("picks a usdc root entry and serves its bytes via fetchBytes", async () => {
+    const pkg = openUsdz(zipSync({ "root.usdc": fakeCrate }, { level: 0 }));
+    expect(pkg.rootEntry).toBe("root.usdc");
+    await expect(pkg.resolver.fetchBytes("root.usdc")).resolves.toEqual(fakeCrate);
+  });
+
+  it("rejects fetchText for crate content instead of decoding garbage", async () => {
+    const pkg = openUsdz(zipSync({ "robot.usd": fakeCrate }, { level: 0 }));
+    await expect(pkg.resolver.fetchText("robot.usd")).rejects.toThrow(/fetchBytes/);
   });
 });

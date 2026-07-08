@@ -54,14 +54,12 @@ export class ThreeUsdRobotLoader {
 
   /**
    * Fetch an asset by URL and build the robot. `.usdz` packages are unzipped and
-   * composed from their entries; everything else is treated as USDA text.
+   * composed from their entries; everything else is sniffed for the crate magic
+   * and parsed as binary USDC or USDA text.
    */
   async loadAsync(url: string): Promise<ThreeUsdRobot> {
-    if (/\.usdz$/i.test(url)) {
-      return this.parseUsdz(await this.fetchRootBytes(url));
-    }
-    // Fetch bytes so we can detect a binary crate (`.usd` may be USDC or USDA).
     const bytes = await this.fetchRootBytes(url);
+    if (/\.usdz$/i.test(url)) return this.parseUsdz(bytes);
     if (CrateReader.isCrate(bytes)) return this.parseCrate(bytes, url);
     return this.parse(new TextDecoder().decode(bytes), url);
   }
@@ -84,17 +82,16 @@ export class ThreeUsdRobotLoader {
   /** Build a robot from the bytes of a `.usdz` package. */
   async parseUsdz(bytes: Uint8Array): Promise<ThreeUsdRobot> {
     const pkg = openUsdz(bytes);
-    const rootText = await pkg.resolver.fetchText(pkg.rootEntry);
-    const stage = await this.composeStage(rootText, pkg.rootEntry, pkg.resolver);
+    // The root layer of a usdz is typically binary USDC — sniff, don't assume text.
+    const rootBytes = await pkg.resolver.fetchBytes(pkg.rootEntry);
+    const stage = await this.composeStageFromBytes(rootBytes, pkg.rootEntry, pkg.resolver);
     return this.buildFromStage(stage, pkg.rootEntry, pkg.resolver);
   }
 
   /** Build a robot from the bytes of a binary crate (`.usdc` / binary `.usd`). */
   async parseCrate(bytes: Uint8Array, baseUrl = ""): Promise<ThreeUsdRobot> {
-    const file = crateToUsdaFile(new CrateReader(bytes));
-    const composeOptions = this.options.onWarn ? { onWarn: this.options.onWarn } : {};
-    const composed = await composeFile(file, baseUrl, this.resolver, composeOptions);
-    return this.buildFromStage(Stage.OpenFromFile(composed), baseUrl, this.resolver);
+    const stage = await this.composeStageFromBytes(bytes, baseUrl, this.resolver);
+    return this.buildFromStage(stage, baseUrl, this.resolver);
   }
 
   /** Parse + compose USDA source into the Three.js-independent robot IR. */
@@ -129,6 +126,24 @@ export class ThreeUsdRobotLoader {
   ): Promise<Stage> {
     const composeOptions = this.options.onWarn ? { onWarn: this.options.onWarn } : {};
     return Stage.OpenFromFile(await composeLayer(text, baseUrl, resolver, composeOptions));
+  }
+
+  /** Compose a layer from raw bytes, sniffing binary crate vs USDA text. */
+  private async composeStageFromBytes(
+    bytes: Uint8Array,
+    baseUrl: string,
+    resolver: AssetResolver,
+  ): Promise<Stage> {
+    const composeOptions = this.options.onWarn ? { onWarn: this.options.onWarn } : {};
+    const composed = CrateReader.isCrate(bytes)
+      ? await composeFile(
+          crateToUsdaFile(new CrateReader(bytes)),
+          baseUrl,
+          resolver,
+          composeOptions,
+        )
+      : await composeLayer(new TextDecoder().decode(bytes), baseUrl, resolver, composeOptions);
+    return Stage.OpenFromFile(composed);
   }
 
   private robotOptions(): ThreeUsdRobotOptions {
