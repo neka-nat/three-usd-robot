@@ -13,7 +13,7 @@ import {
   multiply,
 } from "../kinematics/transforms.js";
 import { Quat, type SdfPath, type Vec3 } from "../parser/ast.js";
-import type { Axis, JointType } from "../robot/RobotDescription.js";
+import type { Axis, JointType, LinkInertialDescription } from "../robot/RobotDescription.js";
 import type { Prim } from "../usd/Prim.js";
 
 const JOINT_TYPE_BY_SCHEMA: Record<string, JointType> = {
@@ -25,6 +25,9 @@ const JOINT_TYPE_BY_SCHEMA: Record<string, JointType> = {
 export const ARTICULATION_ROOT_API = "PhysicsArticulationRootAPI";
 export const RIGID_BODY_API = "PhysicsRigidBodyAPI";
 export const COLLISION_API = "PhysicsCollisionAPI";
+export const MASS_API = "PhysicsMassAPI";
+export const MESH_COLLISION_API = "PhysicsMeshCollisionAPI";
+export const PHYSICS_MATERIAL_API = "PhysicsMaterialAPI";
 
 /** Base joint type from the prim's schema type, or `null` if not a joint. */
 export function getJointType(prim: Prim): JointType | null {
@@ -106,6 +109,22 @@ export function getJointStatePosition(prim: Prim, kind: "angular" | "linear"): n
   return readNumber(prim, `state:${kind}:physics:position`);
 }
 
+/** Read `UsdPhysicsMassAPI` properties, or `undefined` when none are authored (M16). */
+export function getMassProperties(prim: Prim): LinkInertialDescription | undefined {
+  const out: LinkInertialDescription = {};
+  const mass = readNumber(prim, "physics:mass");
+  if (mass !== undefined) out.mass = mass;
+  const density = readNumber(prim, "physics:density");
+  if (density !== undefined) out.density = density;
+  const centerOfMass = readVec3Opt(prim, "physics:centerOfMass");
+  if (centerOfMass) out.centerOfMass = centerOfMass;
+  const diagonalInertia = readVec3Opt(prim, "physics:diagonalInertia");
+  if (diagonalInertia) out.diagonalInertia = diagonalInertia;
+  const principalAxes = prim.GetAttribute("physics:principalAxes").Get();
+  if (principalAxes instanceof Quat) out.principalAxes = principalAxes;
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
 // --- typed readers ---------------------------------------------------------
 
 function readNumber(prim: Prim, name: string): number | undefined {
@@ -114,11 +133,15 @@ function readNumber(prim: Prim, name: string): number | undefined {
 }
 
 function readVec3(prim: Prim, name: string, def: Vec3): Vec3 {
+  return readVec3Opt(prim, name) ?? def;
+}
+
+function readVec3Opt(prim: Prim, name: string): Vec3 | undefined {
   const v = prim.GetAttribute(name).Get();
   if (Array.isArray(v) && v.length === 3 && v.every((n) => typeof n === "number")) {
     return v as Vec3;
   }
-  return def;
+  return undefined;
 }
 
 function readQuat(prim: Prim, name: string, def: Quat): Quat {

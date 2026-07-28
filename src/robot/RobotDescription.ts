@@ -11,6 +11,7 @@
 
 import type { SampleChannel } from "../kinematics/sampling.js";
 import type { Mat4 } from "../kinematics/transforms.js";
+import type { Quat, Vec3 } from "../parser/ast.js";
 
 export type JointType = "fixed" | "revolute" | "continuous" | "prismatic";
 
@@ -48,6 +49,22 @@ export type LinkDescription = {
   visualPrims: string[];
   /** Mesh prim paths flagged with a collision API. */
   collisionPrims?: string[];
+  /** Mass properties (`UsdPhysicsMassAPI`), if authored (M16). */
+  inertial?: LinkInertialDescription;
+};
+
+/** Mass properties as authored by `UsdPhysicsMassAPI` (stage units). */
+export type LinkInertialDescription = {
+  /** Mass in kilograms. */
+  mass?: number;
+  /** Center of mass in the link frame (stage linear units). */
+  centerOfMass?: Vec3;
+  /** Principal moments of inertia. */
+  diagonalInertia?: Vec3;
+  /** Orientation of the principal inertia axes in the link frame. */
+  principalAxes?: Quat;
+  /** Density — the physics engine derives mass from it when `mass` is absent. */
+  density?: number;
 };
 
 export type JointDescription = {

@@ -8,7 +8,15 @@
     "strict": true,
     "skipLibCheck": true,
     "noEmit": true,
-    "types": ["react", "react-dom", "@react-three/fiber"]
+    "types": ["react", "react-dom", "@react-three/fiber"],
+    // Mirror the vite aliases so the editor/tsc resolve the library from source.
+    "baseUrl": ".",
+    "paths": {
+      "three-usd-robot": ["../../src/index.ts"],
+      "three-usd-robot/core": ["../../src/core.ts"],
+      "three-usd-robot/helpers": ["../../src/helpers.ts"],
+      "three-usd-robot/react": ["../../src/react.tsx"]
+    }
   },
   "include": ["src", "vite.config.ts"]
 }

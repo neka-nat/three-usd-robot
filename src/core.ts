@@ -38,6 +38,30 @@ export { parseUsda } from "./parser/parseUsda.js";
 export { ParseError } from "./parser/reader.js";
 export { tokenize, TokenizeError } from "./parser/tokenize.js";
 
+// Writer (M12) — the parse direction's inverse
+export { serializeUsda } from "./writer/writeUsda.js";
+
+// Robot exporter (M13) — IR → USDA layer
+export { type ExportRobotOptions, exportRobotUsda } from "./export/exportRobot.js";
+export {
+  type CollisionApproximation,
+  type ExportMaterial,
+  type ExportMesh,
+  type ExportPhysicsMaterial,
+  type RobotGeometryProvider,
+  stageGeometryProvider,
+  type TextureChannel,
+} from "./export/GeometryProvider.js";
+export { writeUsdz } from "./export/writeUsdz.js";
+
+// Simulation-readiness validation (M16)
+export {
+  type ValidateRobotOptions,
+  type ValidationIssue,
+  type ValidationSeverity,
+  validateRobotDescription,
+} from "./robot/RobotValidator.js";
+
 // USD-conformant runtime API
 export { Attribute, Relationship } from "./usd/Attribute.js";
 export { Layer } from "./usd/Layer.js";
@@ -58,6 +82,7 @@ export { crateToUsdaFile } from "./usd/crate/toUsdaFile.js";
 
 // Transform math (column-major Mat4, Three.js elements layout)
 export {
+  decomposeRigid,
   DEG2RAD,
   fromUsdMatrix,
   getTranslation,
@@ -74,6 +99,7 @@ export {
   multiply,
   multiplyAll,
   RAD2DEG,
+  toUsdMatrix,
 } from "./kinematics/transforms.js";
 
 // xformOp resolution
@@ -89,6 +115,7 @@ export type {
   JointDriveDescription,
   JointType,
   LinkDescription,
+  LinkInertialDescription,
   RobotDescription,
 } from "./robot/RobotDescription.js";
 export { type ExtractOptions, extractRobotDescription } from "./robot/RobotExtractor.js";
@@ -99,7 +126,12 @@ export {
   type KinematicTree,
   type TreeEdge,
 } from "./robot/buildKinematicTree.js";
-export { jointValueToSI, normalizeJointLimits, refineJointType } from "./robot/normalize.js";
+export {
+  jointValueFromSI,
+  jointValueToSI,
+  normalizeJointLimits,
+  refineJointType,
+} from "./robot/normalize.js";
 
 // USD schema accessors
 export {
@@ -120,8 +152,12 @@ export {
   getJointLocalFrame,
   getJointStatePosition,
   getJointType,
+  getMassProperties,
   hasArticulationRootAPI,
   hasCollisionAPI,
   hasRigidBodyAPI,
+  MASS_API,
+  MESH_COLLISION_API,
+  PHYSICS_MATERIAL_API,
   RIGID_BODY_API,
 } from "./schemas/usdPhysics.js";

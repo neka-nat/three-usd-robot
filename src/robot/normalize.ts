@@ -1,6 +1,6 @@
 /** SI normalization for joint values. */
 
-import { DEG2RAD } from "../kinematics/transforms.js";
+import { DEG2RAD, RAD2DEG } from "../kinematics/transforms.js";
 import type { JointType } from "./RobotDescription.js";
 
 const isFinite_ = (x: number | undefined): x is number => x !== undefined && Number.isFinite(x);
@@ -31,6 +31,11 @@ export function normalizeJointLimits(
 /** Convert an authored joint value to SI (angular degrees → radians). */
 export function jointValueToSI(angular: boolean, raw: number): number {
   return angular ? raw * DEG2RAD : raw;
+}
+
+/** Convert an SI joint value back to authored units (angular radians → degrees, M13 export). */
+export function jointValueFromSI(angular: boolean, si: number): number {
+  return angular ? si * RAD2DEG : si;
 }
 
 /**

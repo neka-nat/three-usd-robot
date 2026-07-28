@@ -47,6 +47,15 @@ export class Stage {
     return this._layer;
   }
 
+  /**
+   * Serialize the stage's backing layer to USDA text. Loader-built stages wrap
+   * the fully composed layer, so this is a flattened (`usdcat --flatten`-like)
+   * export of everything that was read — including binary-crate sources.
+   */
+  ExportToString(): string {
+    return this._layer.ExportToString();
+  }
+
   GetPseudoRoot(): Prim {
     return this._pseudoRoot;
   }

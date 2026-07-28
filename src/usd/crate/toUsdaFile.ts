@@ -91,11 +91,15 @@ export function crateToUsdaFile(crate: CrateReader): UsdaFile {
 
 function buildAttribute(crate: CrateReader, name: string, fm: Map<string, bigint>): AttributeSpec {
   const defaultRep = fm.get("default");
+  // Crate type names carry the array suffix (`token[]`); the USDA AST keeps
+  // the base name in `typeName` and the suffix in `isArray` (parser convention).
+  const rawType = asString(crate, fm.get("typeName")) ?? "";
+  const isArrayType = rawType.endsWith("[]");
   const attr: AttributeSpec = {
     kind: "attribute",
     name,
-    typeName: asString(crate, fm.get("typeName")) ?? "",
-    isArray: defaultRep !== undefined ? decodeRepBits(defaultRep).isArray : false,
+    typeName: isArrayType ? rawType.slice(0, -2) : rawType,
+    isArray: isArrayType || (defaultRep !== undefined ? decodeRepBits(defaultRep).isArray : false),
     variability: asNumber(crate, fm.get("variability")) === 1 ? "uniform" : "varying",
     custom: false,
     metadata: {},

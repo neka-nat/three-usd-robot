@@ -41,5 +41,22 @@ export {
   type ThreeUsdRobotLoaderOptions,
 } from "./three/ThreeUsdRobotLoader.js";
 
+// Authoring & export (M14)
+export {
+  type AddJointOptions,
+  type AddLinkOptions,
+  RobotBuilder,
+  type RobotBuilderOptions,
+  type WorldFrame,
+} from "./three/RobotBuilder.js";
+export {
+  exportThreeUsdRobot,
+  type ExportThreeUsdRobotOptions,
+  geometryToExportMesh,
+  type GeometryToExportMeshOptions,
+  materialToExportMaterial,
+  threeGeometryProvider,
+} from "./three/exportThreeUsdRobot.js";
+
 // Re-export the Three.js-independent core surface.
 export * from "./core.js";

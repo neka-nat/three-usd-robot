@@ -18,6 +18,7 @@ import {
   getJointLocalFrame,
   getJointStatePosition,
   getJointType,
+  getMassProperties,
   hasArticulationRootAPI,
   hasCollisionAPI,
   hasRigidBodyAPI,
@@ -130,11 +131,13 @@ function buildLink(path: string, prim: Prim | null): LinkDescription {
     if (mp && (hasCollisionAPI(mp) || isNonVisualPurpose(mp))) collisionPrims.push(meshPath);
     else visualPrims.push(meshPath);
   }
+  const inertial = getMassProperties(prim);
   return {
     name,
     primPath: path,
     visualPrims,
     ...(collisionPrims.length ? { collisionPrims } : {}),
+    ...(inertial ? { inertial } : {}),
   };
 }
 

@@ -15,7 +15,7 @@
  * a plain copy. See the module test for a worked example.
  */
 
-import type { Quat, UsdMatrix, Vec3 } from "../parser/ast.js";
+import { Quat, UsdMatrix, type Vec3 } from "../parser/ast.js";
 
 /** Column-major 4×4 matrix (Three.js `elements` layout). */
 export type Mat4 = number[];
@@ -378,4 +378,115 @@ export function fromUsdMatrix(m: UsdMatrix): Mat4 {
 /** Extract the translation component `[x, y, z]` from a {@link Mat4}. */
 export function getTranslation(m: Mat4): Vec3 {
   return [m[12]!, m[13]!, m[14]!];
+}
+
+/** Copy a {@link Mat4} into a USD `matrix4d` — same flat layout (see module docs). */
+export function toUsdMatrix(m: Mat4): UsdMatrix {
+  if (m.length !== 16) {
+    throw new Error(`expected 16 matrix elements but got ${m.length}`);
+  }
+  return new UsdMatrix([...m], 4);
+}
+
+/**
+ * Decompose a rigid transform into translation + orientation (M13 export).
+ *
+ * The rotation basis is orthonormalized (Gram-Schmidt, right-handed) before
+ * quaternion extraction; `rigid` reports whether the input already was rigid
+ * within tolerance, so callers can warn that scale/shear/reflection was
+ * discarded.
+ */
+export function decomposeRigid(m: Mat4): { position: Vec3; orientation: Quat; rigid: boolean } {
+  const position: Vec3 = [m[12]!, m[13]!, m[14]!];
+
+  // Rotation-block basis columns.
+  const b0: Vec3 = [m[0]!, m[1]!, m[2]!];
+  const b1: Vec3 = [m[4]!, m[5]!, m[6]!];
+  const b2: Vec3 = [m[8]!, m[9]!, m[10]!];
+
+  const EPS = 1e-6;
+  const rigid =
+    Math.abs(norm(b0) - 1) < EPS &&
+    Math.abs(norm(b1) - 1) < EPS &&
+    Math.abs(norm(b2) - 1) < EPS &&
+    Math.abs(dot(b0, b1)) < EPS &&
+    Math.abs(dot(b1, b2)) < EPS &&
+    Math.abs(dot(b0, b2)) < EPS &&
+    dot(cross(b0, b1), b2) > 0; // right-handed (no reflection)
+
+  const c0 = normalizeVec(b0);
+  const c1 = normalizeVec(subVec(b1, scaleVec(c0, dot(c0, b1))));
+  const c2 = cross(c0, c1);
+
+  // Row-major rotation entries from the orthonormal columns.
+  const r11 = c0[0],
+    r12 = c1[0],
+    r13 = c2[0];
+  const r21 = c0[1],
+    r22 = c1[1],
+    r23 = c2[1];
+  const r31 = c0[2],
+    r32 = c1[2],
+    r33 = c2[2];
+
+  // Matrix → quaternion (Shepperd's method, as in THREE.Quaternion.setFromRotationMatrix).
+  const trace = r11 + r22 + r33;
+  let w: number;
+  let x: number;
+  let y: number;
+  let z: number;
+  if (trace > 0) {
+    const s = 0.5 / Math.sqrt(trace + 1);
+    w = 0.25 / s;
+    x = (r32 - r23) * s;
+    y = (r13 - r31) * s;
+    z = (r21 - r12) * s;
+  } else if (r11 > r22 && r11 > r33) {
+    const s = 2 * Math.sqrt(1 + r11 - r22 - r33);
+    w = (r32 - r23) / s;
+    x = 0.25 * s;
+    y = (r12 + r21) / s;
+    z = (r13 + r31) / s;
+  } else if (r22 > r33) {
+    const s = 2 * Math.sqrt(1 + r22 - r11 - r33);
+    w = (r13 - r31) / s;
+    x = (r12 + r21) / s;
+    y = 0.25 * s;
+    z = (r23 + r32) / s;
+  } else {
+    const s = 2 * Math.sqrt(1 + r33 - r11 - r22);
+    w = (r21 - r12) / s;
+    x = (r13 + r31) / s;
+    y = (r23 + r32) / s;
+    z = 0.25 * s;
+  }
+
+  return { position, orientation: new Quat(w, [x, y, z]), rigid };
+}
+
+// --- small Vec3 helpers for decomposeRigid ---------------------------------
+
+function dot(a: Vec3, b: Vec3): number {
+  return a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+}
+
+function norm(v: Vec3): number {
+  return Math.hypot(v[0], v[1], v[2]);
+}
+
+function subVec(a: Vec3, b: Vec3): Vec3 {
+  return [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+}
+
+function scaleVec(v: Vec3, s: number): Vec3 {
+  return [v[0] * s, v[1] * s, v[2] * s];
+}
+
+function normalizeVec(v: Vec3): Vec3 {
+  const n = norm(v);
+  return n > 0 ? scaleVec(v, 1 / n) : [1, 0, 0];
+}
+
+function cross(a: Vec3, b: Vec3): Vec3 {
+  return [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
 }

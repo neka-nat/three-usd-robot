@@ -130,12 +130,72 @@ const desc = extractRobotDescription(Stage.OpenFromString(usdaText));
 console.log(desc.rootLink, Object.keys(desc.joints));
 ```
 
+### Export — write USD back out
+
+The loader's inverse: serialize what you loaded (or built) to USDA / USDZ.
+
+```ts
+import {
+  exportThreeUsdRobot,
+  RobotBuilder,
+  serializeUsda,
+  writeUsdz,
+} from "three-usd-robot";
+
+// Re-export a loaded robot (meshes harvested from the scene):
+const usda = serializeUsda(exportThreeUsdRobot(robot));
+
+// Flatten anything loadable (usda/usdc/usdz → composed single-layer USDA):
+const flat = stage.ExportToString(); // `usdcat --flatten`-like
+
+// Author a robot from Three.js objects — the build-time arrangement is the
+// zero pose; each joint takes ONE world-space frame:
+const builder = new RobotBuilder({ name: "my_robot" }); // Z-up, meters
+builder.addLink({ name: "base", visuals: [baseMesh] });
+builder.addLink({ name: "arm", frame: armFrame, visuals: [armMesh] });
+builder.addFixedJoint({ name: "root_joint", child: "base" });
+builder.addRevoluteJoint({
+  name: "j1", parent: "base", child: "arm",
+  frame: jointFrame, axis: "Z", lower: -Math.PI, upper: Math.PI,
+});
+const file = builder.toUsda(); // validated UsdaFile AST
+
+// Package as USDZ (stored zip, 64-byte aligned; bundle texture bytes too):
+const usdz = writeUsdz({ "robot.usda": serializeUsda(file), "textures/a.png": pngBytes });
+```
+
+Joints export as `UsdPhysics` prims (limits re-authored in degrees), links at
+their **zero-pose** placement with the initial pose as `PhysicsJointStateAPI`
+(so re-imports apply it exactly once), and `MeshStandardMaterial` constants as
+a bound `UsdPreviewSurface` — texture asset paths ride along as a
+`UsdUVTexture` network; supply the image bytes to `writeUsdz` yourself.
+
+Command line: `npx tsx scripts/usdc-to-usda.ts robot.usd` converts binary
+crate / usdz packages to ASCII USDA.
+
+Simulation-ready extras: per-link **mass properties** (`inertial` →
+`PhysicsMassAPI`), **physics materials** (`material:binding:physics`) and
+**collision approximations** (`PhysicsMeshCollisionAPI`) on collision meshes,
+plus opt-in `enabledSelfCollisions` (PhysX) and `isaacRobotSchema`
+(`IsaacRobotAPI` / `IsaacLinkAPI` / `IsaacJointAPI`) export options. Check a
+robot before exporting with:
+
+```ts
+import { validateRobotDescription } from "three-usd-robot/core";
+const issues = validateRobotDescription(desc, { geometry }); // errors + warnings
+```
+
+**Verifying an export**: `pip install usd-core`, then
+`python scripts/pxr-validate.py robot.usda robot.usdz` runs pxr's full
+UsdValidation suite (incl. the usdPhysics checkers); in Isaac Sim, File → Open.
+Manual smoke steps live in [`docs/export-design.md`](./docs/export-design.md).
+
 ## Package entry points
 
 | Import | Contents |
 | --- | --- |
-| `three-usd-robot` | Three.js runtime — `ThreeUsdRobotLoader`, `ThreeUsdRobot` |
-| `three-usd-robot/core` | Three.js-independent USDA parser, robot IR, forward-kinematics math |
+| `three-usd-robot` | Three.js runtime — `ThreeUsdRobotLoader`, `ThreeUsdRobot`, `RobotBuilder`, `exportThreeUsdRobot` |
+| `three-usd-robot/core` | Three.js-independent USDA parser **& writer**, robot IR + exporter (`serializeUsda`, `exportRobotUsda`, `writeUsdz`), forward-kinematics math |
 | `three-usd-robot/helpers` | Viewer helpers (joint axes, link frames, joint limits) |
 | `three-usd-robot/extras` | Heavier convenience utilities (e.g. joint slider panel) |
 | `three-usd-robot/react` | React Three Fiber `<UsdRobot>` component + hooks (optional `react` / `@react-three/fiber` peers) |

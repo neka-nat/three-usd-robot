@@ -78,7 +78,9 @@ export class Prim {
     if (!this._attributes) {
       this._attributes = new Map();
       for (const p of this._spec?.properties ?? []) {
-        if (p.kind === "attribute") this._attributes.set(p.name, p);
+        if (p.kind !== "attribute") continue;
+        const prev = this._attributes.get(p.name);
+        this._attributes.set(p.name, prev ? mergeAttributeSpecs(prev, p) : p);
       }
     }
     return this._attributes;
@@ -151,4 +153,26 @@ export class Prim {
   HasAPI(schemaName: string): boolean {
     return this.GetAppliedSchemas().some((s) => s === schemaName || s.startsWith(`${schemaName}:`));
   }
+}
+
+/**
+ * USDA authors one attribute as several statements — `float x = 1` plus
+ * `float x.timeSamples = { … }` is the standard flattened form — and the parser
+ * keeps one spec per statement. Fold later opinions about the same attribute
+ * into a merged view so `Get`/`GetTimeSamples`/`GetConnections` see all of them.
+ */
+function mergeAttributeSpecs(a: AttributeSpec, b: AttributeSpec): AttributeSpec {
+  const merged: AttributeSpec = { ...a, metadata: { ...a.metadata, ...b.metadata } };
+  if (b.typeName) merged.typeName = b.typeName;
+  if (b.isArray) merged.isArray = true;
+  if (b.variability === "uniform") merged.variability = "uniform";
+  if (b.custom) merged.custom = true;
+  if (b.value !== undefined) merged.value = b.value;
+  if (b.timeSamples) {
+    merged.timeSamples = a.timeSamples
+      ? new Map([...a.timeSamples, ...b.timeSamples])
+      : b.timeSamples;
+  }
+  if (b.connections) merged.connections = b.connections;
+  return merged;
 }
