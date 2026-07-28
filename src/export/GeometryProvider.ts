@@ -10,6 +10,7 @@
 import { type Mat4, identity4, multiply } from "../kinematics/transforms.js";
 import type { Vec2, Vec3 } from "../parser/ast.js";
 import type { LinkDescription } from "../robot/RobotDescription.js";
+import { getMaterialSubsets } from "../schemas/usdGeom.js";
 import { resolveBoundMaterial } from "../three/MaterialBinding.js";
 import type { Prim } from "../usd/Prim.js";
 import type { Stage } from "../usd/Stage.js";
@@ -98,66 +99,152 @@ export function stageGeometryProvider(stage: Stage): RobotGeometryProvider {
     const linkPrim = stage.GetPrimAtPath(link.primPath);
     if (!linkPrim) return [];
 
-    const collisionSet = new Set(link.collisionPrims ?? []);
+    // Meshes that are both visual and collision export once, as visual.
+    const visualSet = new Set(link.visualPrims);
     const out: ExportMesh[] = [];
     for (const path of link.visualPrims) {
-      if (collisionSet.has(path)) continue;
-      const mesh = readMesh(stage, linkPrim, path, "visual");
-      if (mesh) out.push(mesh);
+      out.push(...readMeshes(stage, linkPrim, path, "visual"));
     }
     for (const path of link.collisionPrims ?? []) {
-      const mesh = readMesh(stage, linkPrim, path, "collision");
-      if (mesh) out.push(mesh);
+      if (visualSet.has(path)) continue;
+      out.push(...readMeshes(stage, linkPrim, path, "collision"));
     }
     return out;
   };
 }
 
-function readMesh(
+/**
+ * Read a Mesh prim as exportable data. A mesh painted by `materialBind` face
+ * subsets becomes one {@link ExportMesh} per subset (points re-indexed to the
+ * faces each one covers), so the export keeps its materials instead of
+ * collapsing to a single colour.
+ */
+function readMeshes(
   stage: Stage,
   linkPrim: Prim,
   meshPath: string,
   kind: "visual" | "collision",
-): ExportMesh | null {
+): ExportMesh[] {
   const prim = stage.GetPrimAtPath(meshPath);
-  if (!prim) return null;
+  if (!prim) return [];
 
   const points = prim.GetAttribute("points").Get();
-  if (!isVec3Array(points) || points.length === 0) return null;
+  if (!isVec3Array(points) || points.length === 0) return [];
 
-  const counts = prim.GetAttribute("faceVertexCounts").Get();
-  const indices = prim.GetAttribute("faceVertexIndices").Get();
-  const normals = prim.GetAttribute("normals").Get();
-  const st = prim.GetAttribute("primvars:st").Get();
+  const countsValue = prim.GetAttribute("faceVertexCounts").Get();
+  const indicesValue = prim.GetAttribute("faceVertexIndices").Get();
+  const counts = isNumberArray(countsValue) ? countsValue : [];
+  const indices = isNumberArray(indicesValue) ? indicesValue : [];
+  const normalsValue = prim.GetAttribute("normals").Get();
+  const stValue = prim.GetAttribute("primvars:st").Get();
   const displayColor = prim.GetAttribute("primvars:displayColor").Get();
+  const normals =
+    isVec3Array(normalsValue) && normalsValue.length === points.length ? normalsValue : undefined;
+  const st = isVec2Array(stValue) && stValue.length === points.length ? stValue : undefined;
 
-  const mesh: ExportMesh = {
-    name: prim.GetName(),
-    kind,
-    points: points.slice(),
-    faceVertexCounts: isNumberArray(counts) ? counts.slice() : [],
-    faceVertexIndices: isNumberArray(indices) ? indices.slice() : [],
-  };
-  if (isVec3Array(normals) && normals.length === points.length) mesh.normals = normals.slice();
-  if (isVec2Array(st) && st.length === points.length) mesh.st = st.slice();
-  if (isVec3Array(displayColor) && displayColor[0]) mesh.displayColor = displayColor[0];
-  if (prim.GetAttribute("doubleSided").Get() === true) mesh.doubleSided = true;
-
+  // Attributes shared by every piece of this mesh.
   const transform = relativeTransform(linkPrim, prim);
-  if (!isIdentity(transform)) mesh.transform = transform;
+  const common = {
+    kind,
+    ...(isVec3Array(displayColor) && displayColor[0] ? { displayColor: displayColor[0] } : {}),
+    ...(prim.GetAttribute("doubleSided").Get() === true ? { doubleSided: true } : {}),
+    ...(isIdentity(transform) ? {} : { transform }),
+  } satisfies Partial<ExportMesh>;
 
-  const material = readBoundMaterial(stage, prim);
-  if (material) mesh.material = material;
-
-  if (kind === "collision") {
+  const withPhysics = (mesh: ExportMesh): ExportMesh => {
+    if (kind !== "collision") return mesh;
     const approximation = prim.GetAttribute("physics:approximation").Get();
     if (typeof approximation === "string" && APPROXIMATIONS.has(approximation)) {
       mesh.collisionApproximation = approximation as CollisionApproximation;
     }
     const physicsMaterial = readBoundPhysicsMaterial(stage, prim);
     if (physicsMaterial) mesh.physicsMaterial = physicsMaterial;
+    return mesh;
+  };
+
+  const subsets = getMaterialSubsets(prim);
+  if (subsets.length === 0) {
+    const material = readBoundMaterial(stage, prim);
+    return [
+      withPhysics({
+        ...common,
+        name: prim.GetName(),
+        points: points.slice(),
+        faceVertexCounts: counts.slice(),
+        faceVertexIndices: indices.slice(),
+        ...(normals ? { normals: normals.slice() } : {}),
+        ...(st ? { st: st.slice() } : {}),
+        ...(material ? { material } : {}),
+      }),
+    ];
   }
-  return mesh;
+
+  const faceStart: number[] = [];
+  let offset = 0;
+  for (const count of counts) {
+    faceStart.push(offset);
+    offset += count;
+  }
+
+  /** Re-index the given faces onto their own point list. */
+  const piece = (faces: number[], name: string, material?: ExportMaterial): ExportMesh | null => {
+    const remap = new Map<number, number>();
+    const outPoints: Vec3[] = [];
+    const outNormals: Vec3[] = [];
+    const outSt: Vec2[] = [];
+    const outCounts: number[] = [];
+    const outIndices: number[] = [];
+
+    for (const face of faces) {
+      const start = faceStart[face];
+      const count = counts[face];
+      if (start === undefined || count === undefined) continue;
+      outCounts.push(count);
+      for (let k = 0; k < count; k++) {
+        const vertex = indices[start + k];
+        if (vertex === undefined || !points[vertex]) continue;
+        let mapped = remap.get(vertex);
+        if (mapped === undefined) {
+          mapped = outPoints.length;
+          remap.set(vertex, mapped);
+          outPoints.push(points[vertex]!);
+          if (normals) outNormals.push(normals[vertex]!);
+          if (st) outSt.push(st[vertex]!);
+        }
+        outIndices.push(mapped);
+      }
+    }
+    if (outPoints.length === 0) return null;
+
+    return withPhysics({
+      ...common,
+      name,
+      points: outPoints,
+      faceVertexCounts: outCounts,
+      faceVertexIndices: outIndices,
+      ...(normals ? { normals: outNormals } : {}),
+      ...(st ? { st: outSt } : {}),
+      ...(material ? { material } : {}),
+    });
+  };
+
+  const out: ExportMesh[] = [];
+  const claimed = new Set<number>();
+  subsets.forEach((subset, index) => {
+    const faces = subset.faces.filter((f) => f >= 0 && f < counts.length && !claimed.has(f));
+    for (const f of faces) claimed.add(f);
+    const material = readBoundMaterial(stage, subset.prim);
+    const mesh = piece(faces, `${prim.GetName()}_${material?.name ?? index}`, material);
+    if (mesh) out.push(mesh);
+  });
+
+  const leftover = counts.map((_, f) => f).filter((f) => !claimed.has(f));
+  if (leftover.length > 0) {
+    const material = readBoundMaterial(stage, prim);
+    const mesh = piece(leftover, prim.GetName(), material);
+    if (mesh) out.push(mesh);
+  }
+  return out;
 }
 
 const APPROXIMATIONS: ReadonlySet<string> = new Set([

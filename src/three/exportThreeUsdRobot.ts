@@ -27,6 +27,11 @@ export type GeometryToExportMeshOptions = {
   transform?: Mat4;
   material?: ExportMaterial;
   doubleSided?: boolean;
+  /**
+   * Export only this slice of the index buffer — a `BufferGeometry` group, as
+   * used by multi-material meshes. Vertices are re-indexed onto the slice.
+   */
+  group?: { start: number; count: number };
 };
 
 /**
@@ -41,18 +46,50 @@ export function geometryToExportMesh(
   const position = geometry.getAttribute("position");
   if (!position || position.count === 0) return null;
 
-  const points: Vec3[] = [];
-  for (let i = 0; i < position.count; i++) {
-    points.push([position.getX(i), position.getY(i), position.getZ(i)]);
-  }
-
   const index = geometry.getIndex();
-  let faceVertexIndices = index
+  const all = index
     ? Array.from(index.array as ArrayLike<number>)
-    : points.map((_, i) => i);
-  const triangles = Math.floor(faceVertexIndices.length / 3);
+    : Array.from({ length: position.count }, (_, i) => i);
+  const slice = options.group
+    ? all.slice(options.group.start, options.group.start + options.group.count)
+    : all;
+  const triangles = Math.floor(slice.length / 3);
   if (triangles === 0) return null;
-  faceVertexIndices = faceVertexIndices.slice(0, triangles * 3);
+
+  const normal = geometry.getAttribute("normal");
+  const uv = geometry.getAttribute("uv");
+  const hasNormals = !!normal && normal.count === position.count;
+  const hasUv = !!uv && uv.count === position.count;
+
+  const points: Vec3[] = [];
+  const normals: Vec3[] = [];
+  const st: Vec2[] = [];
+  let faceVertexIndices: number[];
+
+  if (options.group) {
+    // Re-index onto just the vertices this group touches.
+    const remap = new Map<number, number>();
+    faceVertexIndices = [];
+    for (const vertex of slice.slice(0, triangles * 3)) {
+      let mapped = remap.get(vertex);
+      if (mapped === undefined) {
+        mapped = points.length;
+        remap.set(vertex, mapped);
+        points.push([position.getX(vertex), position.getY(vertex), position.getZ(vertex)]);
+        if (hasNormals)
+          normals.push([normal.getX(vertex), normal.getY(vertex), normal.getZ(vertex)]);
+        if (hasUv) st.push([uv.getX(vertex), uv.getY(vertex)]);
+      }
+      faceVertexIndices.push(mapped);
+    }
+  } else {
+    for (let i = 0; i < position.count; i++) {
+      points.push([position.getX(i), position.getY(i), position.getZ(i)]);
+      if (hasNormals) normals.push([normal.getX(i), normal.getY(i), normal.getZ(i)]);
+      if (hasUv) st.push([uv.getX(i), uv.getY(i)]);
+    }
+    faceVertexIndices = slice.slice(0, triangles * 3);
+  }
 
   const mesh: ExportMesh = {
     name: options.name,
@@ -61,21 +98,8 @@ export function geometryToExportMesh(
     faceVertexCounts: new Array(triangles).fill(3),
     faceVertexIndices,
   };
-
-  const normal = geometry.getAttribute("normal");
-  if (normal && normal.count === position.count) {
-    const normals: Vec3[] = [];
-    for (let i = 0; i < normal.count; i++) {
-      normals.push([normal.getX(i), normal.getY(i), normal.getZ(i)]);
-    }
-    mesh.normals = normals;
-  }
-  const uv = geometry.getAttribute("uv");
-  if (uv && uv.count === position.count) {
-    const st: Vec2[] = [];
-    for (let i = 0; i < uv.count; i++) st.push([uv.getX(i), uv.getY(i)]);
-    mesh.st = st;
-  }
+  if (hasNormals) mesh.normals = normals;
+  if (hasUv) mesh.st = st;
 
   if (options.transform && !isIdentityMat4(options.transform)) mesh.transform = options.transform;
   if (options.material) mesh.material = options.material;
@@ -152,15 +176,37 @@ export function threeGeometryProvider(
     for (const childObj of linkObj.children) {
       const meshObj = childObj as THREE.Mesh;
       if (!meshObj.isMesh) continue;
-      const material = Array.isArray(meshObj.material) ? meshObj.material[0] : meshObj.material;
-      if (Array.isArray(meshObj.material) && meshObj.material.length > 1) {
-        onWarn?.(`mesh "${meshObj.name}": multi-material meshes export their first material only`);
+      const kind = meshObj.userData.kind === "collision" ? "collision" : "visual";
+      const transform = [...meshObj.matrix.elements];
+      const baseName = meshObj.name || "mesh";
+      const materials = Array.isArray(meshObj.material) ? meshObj.material : [meshObj.material];
+      const groups = meshObj.geometry.groups;
+
+      // A multi-material mesh exports one USD Mesh per geometry group, so each
+      // group keeps its own material instead of collapsing to the first.
+      if (materials.length > 1 && groups.length > 0) {
+        for (const [i, group] of groups.entries()) {
+          const material = materials[group.materialIndex ?? 0];
+          const exportMaterial = material ? convertMaterial(material) : undefined;
+          const mesh = geometryToExportMesh(meshObj.geometry, {
+            name: `${baseName}_${material?.name || i}`,
+            kind,
+            transform,
+            group: { start: group.start, count: group.count },
+            ...(exportMaterial ? { material: exportMaterial } : {}),
+            doubleSided: material?.side === THREE.DoubleSide,
+          });
+          if (mesh) out.push(mesh);
+        }
+        continue;
       }
+
+      const material = materials[0];
       const exportMaterial = material ? convertMaterial(material) : undefined;
       const mesh = geometryToExportMesh(meshObj.geometry, {
-        name: meshObj.name || "mesh",
-        kind: meshObj.userData.kind === "collision" ? "collision" : "visual",
-        transform: [...meshObj.matrix.elements],
+        name: baseName,
+        kind,
+        transform,
         ...(exportMaterial ? { material: exportMaterial } : {}),
         doubleSided: material?.side === THREE.DoubleSide,
       });

@@ -33,6 +33,8 @@ const focusRadius = Number(flag("radius") ?? 0);
 const cameraDir = numbers(flag("dir")) ?? [-1.05, -1.5, 0.92];
 /** `--clip=m` hides geometry more than `m` metres in front of the target. */
 const clipDistance = Number(flag("clip") ?? 0);
+/** `--ground` adds a shadow-catching floor under a scene that has none. */
+const wantGround = argv.includes("--ground");
 const SS = 2; // supersampling factor
 const SW = WIDTH * SS;
 const SH = HEIGHT * SS;
@@ -148,6 +150,30 @@ robot.traverse((obj) => {
 });
 
 if (tris.length === 0) throw new Error("no visible triangles found");
+
+// Optional floor: a bare robot reads much better standing on something that
+// catches its shadow. Sized to the model and placed at its lowest point.
+if (wantGround) {
+  const framing = bbox.clone(); // the floor must not drive the framing
+  const size = bbox.getSize(new THREE.Vector3());
+  const span = Math.max(size.x, size.y) * 0.85;
+  const center = bbox.getCenter(new THREE.Vector3());
+  const z = bbox.min.z;
+  const corner = (sx: number, sy: number) =>
+    new THREE.Vector3(center.x + sx * span, center.y + sy * span, z);
+  const plane = new THREE.BufferGeometry().setFromPoints([
+    corner(-1, -1), corner(1, -1), corner(1, 1),
+    corner(-1, -1), corner(1, 1), corner(-1, 1),
+  ]);
+  plane.computeVertexNormals();
+  addGeometry(plane, new THREE.Matrix4(), {
+    albedo: [0.17, 0.18, 0.2],
+    metalness: 0,
+    roughness: 0.95,
+    emissive: [0, 0, 0],
+  });
+  bbox.copy(framing);
+}
 
 // ---------------------------------------------------------------------------
 // Cameras (main isometric view + directional light)

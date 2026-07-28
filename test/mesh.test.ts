@@ -72,3 +72,116 @@ describe("bindRobotMeshes (via loader)", () => {
     expect(meshes(robot)).toHaveLength(0);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Per-face material assignment (`UsdGeomSubset`)
+// ---------------------------------------------------------------------------
+
+/** One mesh painted by two `materialBind` subsets — how real assets ship. */
+const SUBSET_ROBOT = `#usda 1.0
+(
+    defaultPrim = "bot"
+    metersPerUnit = 1
+    upAxis = "Z"
+)
+
+def Xform "bot"
+{
+    def Xform "base" (
+        prepend apiSchemas = ["PhysicsRigidBodyAPI"]
+    )
+    {
+        def Scope "Looks"
+        {
+            def Material "White"
+            {
+                token outputs:surface.connect = </bot/base/Looks/White/S.outputs:surface>
+
+                def Shader "S"
+                {
+                    uniform token info:id = "UsdPreviewSurface"
+                    color3f inputs:diffuseColor = (0.9, 0.9, 0.9)
+                    token outputs:surface
+                }
+            }
+
+            def Material "Black"
+            {
+                token outputs:surface.connect = </bot/base/Looks/Black/S.outputs:surface>
+
+                def Shader "S"
+                {
+                    uniform token info:id = "UsdPreviewSurface"
+                    color3f inputs:diffuseColor = (0.05, 0.05, 0.05)
+                    token outputs:surface
+                }
+            }
+        }
+
+        def Mesh "geom"
+        {
+            int[] faceVertexCounts = [3, 3, 3]
+            int[] faceVertexIndices = [0, 1, 2, 0, 2, 3, 0, 3, 1]
+            point3f[] points = [(0, 0, 0), (1, 0, 0), (0, 1, 0), (0, 0, 1)]
+
+            def GeomSubset "white" (
+                prepend apiSchemas = ["MaterialBindingAPI"]
+            )
+            {
+                uniform token elementType = "face"
+                uniform token familyName = "materialBind"
+                int[] indices = [0, 2]
+                rel material:binding = </bot/base/Looks/White>
+            }
+
+            def GeomSubset "black" (
+                prepend apiSchemas = ["MaterialBindingAPI"]
+            )
+            {
+                uniform token elementType = "face"
+                uniform token familyName = "materialBind"
+                int[] indices = [1]
+                rel material:binding = </bot/base/Looks/Black>
+            }
+        }
+    }
+}
+`;
+
+describe("material subsets", () => {
+  it("groups the geometry per subset and gives each its own material", async () => {
+    const stage = Stage.OpenFromString(SUBSET_ROBOT);
+    const geometry = buildMeshGeometry(stage.GetPrimAtPath("/bot/base/geom")!)!;
+    // Two subsets (2 faces, then 1) — no unassigned faces, so no third group.
+    expect(geometry.groups.map((g) => [g.start, g.count, g.materialIndex])).toEqual([
+      [0, 6, 0],
+      [6, 3, 1],
+    ]);
+
+    const robot = await new ThreeUsdRobotLoader({ upAxisConversion: "none" }).parse(SUBSET_ROBOT);
+    const mesh = meshes(robot)[0]!;
+    const materials = mesh.material as THREE.MeshStandardMaterial[];
+    expect(Array.isArray(materials)).toBe(true);
+    expect(materials[0]!.name).toBe("White");
+    expect(materials[1]!.name).toBe("Black");
+    expect(materials[0]!.color.getHexString()).not.toBe(materials[1]!.color.getHexString());
+  });
+
+  it("exports one mesh per subset, keeping the material names", async () => {
+    const { exportRobotUsda, extractRobotDescription, serializeUsda, stageGeometryProvider } =
+      await import("../src/index.js");
+    const stage = Stage.OpenFromString(SUBSET_ROBOT);
+    const desc = extractRobotDescription(stage);
+    const meshesOut = stageGeometryProvider(stage)("base", desc.links.base!);
+
+    expect(meshesOut.map((m) => m.material?.name)).toEqual(["White", "Black"]);
+    // Points are re-indexed onto the faces each piece covers.
+    expect(meshesOut[0]!.faceVertexCounts).toEqual([3, 3]);
+    expect(meshesOut[1]!.faceVertexCounts).toEqual([3]);
+    expect(meshesOut[1]!.points).toHaveLength(3);
+
+    const text = serializeUsda(exportRobotUsda(desc, { geometry: stageGeometryProvider(stage) }));
+    const reDesc = extractRobotDescription(Stage.OpenFromString(text));
+    expect(reDesc.links.base!.visualPrims).toHaveLength(2);
+  });
+});

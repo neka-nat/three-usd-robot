@@ -12,7 +12,7 @@ import * as THREE from "three";
 import { type Mat4, identity4, multiply } from "../kinematics/transforms.js";
 import type { Vec2, Vec3 } from "../parser/ast.js";
 import type { RobotDescription } from "../robot/RobotDescription.js";
-import { isNonVisualPurpose } from "../schemas/usdGeom.js";
+import { type MaterialSubset, getMaterialSubsets, isNonVisualPurpose } from "../schemas/usdGeom.js";
 import { COLLISION_API } from "../schemas/usdPhysics.js";
 import type { Prim } from "../usd/Prim.js";
 import type { Stage } from "../usd/Stage.js";
@@ -32,7 +32,14 @@ export type BindMeshesOptions = {
   textureProvider?: TextureProvider;
 };
 
-/** Build a `BufferGeometry` from a Mesh prim, or `null` if it has no points. */
+/**
+ * Build a `BufferGeometry` from a Mesh prim, or `null` if it has no points.
+ *
+ * When the mesh carries `materialBind` face subsets, the triangles are ordered
+ * subset by subset and a geometry group is added for each — so the mesh can be
+ * drawn with one material per subset (see {@link buildMeshMaterials}). Group
+ * order matches {@link getMaterialSubsets}, with any unassigned faces last.
+ */
 export function buildMeshGeometry(meshPrim: Prim): THREE.BufferGeometry | null {
   const points = meshPrim.GetAttribute("points").Get();
   if (!isVec3Array(points) || points.length === 0) return null;
@@ -43,7 +50,12 @@ export function buildMeshGeometry(meshPrim: Prim): THREE.BufferGeometry | null {
   const counts = meshPrim.GetAttribute("faceVertexCounts").Get();
   const indices = meshPrim.GetAttribute("faceVertexIndices").Get();
   if (isNumberArray(counts) && isNumberArray(indices)) {
-    geometry.setIndex(triangulate(counts, indices));
+    const subsets = getMaterialSubsets(meshPrim);
+    if (subsets.length > 0) {
+      geometry.setIndex(triangulateBySubset(geometry, counts, indices, subsets));
+    } else {
+      geometry.setIndex(triangulate(counts, indices));
+    }
   } else if (isNumberArray(indices)) {
     geometry.setIndex(indices.slice());
   }
@@ -75,11 +87,13 @@ export function buildMeshMaterial(
   meshPrim: Prim,
   stage?: Stage,
   textures?: TextureProvider,
+  /** Resolve the material binding from here instead (a `GeomSubset`). */
+  bindingPrim?: Prim,
 ): THREE.Material {
   const color = new THREE.Color(DEFAULT_COLOR);
   let opacity = 1;
 
-  const bound = stage ? resolveBoundMaterial(stage, meshPrim) : undefined;
+  const bound = stage ? resolveBoundMaterial(stage, bindingPrim ?? meshPrim) : undefined;
   if (bound?.color) {
     color.setRGB(bound.color[0], bound.color[1], bound.color[2]);
   } else {
@@ -146,7 +160,7 @@ export function buildMeshMaterial(
   const transparent = alphaTest === 0 && hasAlphaSource;
 
   const doubleSided = meshPrim.GetAttribute("doubleSided").Get() === true;
-  return new THREE.MeshStandardMaterial({
+  const material = new THREE.MeshStandardMaterial({
     color,
     metalness,
     roughness,
@@ -163,6 +177,9 @@ export function buildMeshMaterial(
     ...(aoMap ? { aoMap } : {}),
     ...(emissiveMap ? { emissiveMap } : {}),
   });
+  // Carry the USD material name so re-exports keep it (and dedupe by it).
+  if (bound?.name) material.name = bound.name;
+  return material;
 }
 
 /**
@@ -185,16 +202,17 @@ export function bindRobotMeshes(
     const linkPrim = stage.GetPrimAtPath(link.primPath);
     if (!linkObj || !linkPrim) continue;
 
-    const collisionSet = new Set(link.collisionPrims ?? []);
+    // A mesh may be both visual and collision; attach it once, as visual.
+    const visualSet = new Set(link.visualPrims);
 
     if (loadVisuals) {
       for (const meshPath of link.visualPrims) {
-        if (collisionSet.has(meshPath)) continue; // collision-only handled below
         attachMesh(stage, linkPrim, meshPath, linkObj, "visual", textures);
       }
     }
     if (loadCollisions) {
       for (const meshPath of link.collisionPrims ?? []) {
+        if (loadVisuals && visualSet.has(meshPath)) continue;
         attachMesh(stage, linkPrim, meshPath, linkObj, "collision", textures);
       }
     }
@@ -242,6 +260,24 @@ export function bindSceneMeshes(
   return attached;
 }
 
+/**
+ * Materials for a mesh: one per `materialBind` face subset (matching the
+ * geometry groups {@link buildMeshGeometry} adds) plus a trailing fallback for
+ * faces no subset claims. A mesh without subsets gets a single material.
+ */
+export function buildMeshMaterials(
+  meshPrim: Prim,
+  stage?: Stage,
+  textures?: TextureProvider,
+): THREE.Material | THREE.Material[] {
+  const subsets = stage ? getMaterialSubsets(meshPrim) : [];
+  if (subsets.length === 0) return buildMeshMaterial(meshPrim, stage, textures);
+  return [
+    ...subsets.map((s) => buildMeshMaterial(meshPrim, stage, textures, s.prim)),
+    buildMeshMaterial(meshPrim, stage, textures),
+  ];
+}
+
 function attachMesh(
   stage: Stage,
   linkPrim: Prim,
@@ -255,7 +291,7 @@ function attachMesh(
   const geometry = buildMeshGeometry(meshPrim);
   if (!geometry) return;
 
-  const mesh = new THREE.Mesh(geometry, buildMeshMaterial(meshPrim, stage, textures));
+  const mesh = new THREE.Mesh(geometry, buildMeshMaterials(meshPrim, stage, textures));
   mesh.name = meshPrim.GetName();
   mesh.userData.kind = kind;
   mesh.userData.primPath = meshPath;
@@ -301,6 +337,56 @@ function triangulate(faceVertexCounts: number[], faceVertexIndices: number[]): n
     }
     offset += count;
   }
+  return tris;
+}
+
+/**
+ * Triangulate subset by subset so each subset owns a contiguous run of the
+ * index buffer, and register that run as a geometry group.
+ */
+function triangulateBySubset(
+  geometry: THREE.BufferGeometry,
+  faceVertexCounts: number[],
+  faceVertexIndices: number[],
+  subsets: MaterialSubset[],
+): number[] {
+  const faceStart: number[] = [];
+  let offset = 0;
+  for (const count of faceVertexCounts) {
+    faceStart.push(offset);
+    offset += count;
+  }
+
+  const tris: number[] = [];
+  const emit = (face: number) => {
+    const start = faceStart[face]!;
+    const count = faceVertexCounts[face]!;
+    for (let k = 2; k < count; k++) {
+      tris.push(
+        faceVertexIndices[start]!,
+        faceVertexIndices[start + k - 1]!,
+        faceVertexIndices[start + k]!,
+      );
+    }
+  };
+
+  const claimed = new Uint8Array(faceVertexCounts.length);
+  subsets.forEach((subset, index) => {
+    const begin = tris.length;
+    for (const face of subset.faces) {
+      if (face < 0 || face >= faceVertexCounts.length || claimed[face]) continue;
+      claimed[face] = 1;
+      emit(face);
+    }
+    if (tris.length > begin) geometry.addGroup(begin, tris.length - begin, index);
+  });
+
+  const begin = tris.length;
+  for (let face = 0; face < faceVertexCounts.length; face++) {
+    if (!claimed[face]) emit(face);
+  }
+  if (tris.length > begin) geometry.addGroup(begin, tris.length - begin, subsets.length);
+
   return tris;
 }
 

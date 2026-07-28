@@ -122,11 +122,11 @@ function parseVariantSet(r: TokenReader): { setName: string; variants: VariantSe
   const variants: VariantSetMap[string] = {};
   while (!r.is("rbrace") && !r.atEnd()) {
     const variantName = r.expect("string").value;
-    if (r.is("lparen")) parseMetadataBlock(r); // variant metadata (ignored)
+    const metadata = r.is("lparen") ? parseMetadataBlock(r) : {};
     r.expect("lbrace");
     const body = parseBody(r);
     r.expect("rbrace");
-    variants[variantName] = { properties: body.properties, children: body.children };
+    variants[variantName] = { properties: body.properties, children: body.children, metadata };
   }
   r.expect("rbrace");
   return { setName, variants };

@@ -85,7 +85,13 @@ function pushPrimBody(
     for (const [setName, variants] of Object.entries(variantSets)) {
       out.push(`${pad}variantSet ${quoteString(setName)} = {`);
       for (const [variantName, content] of Object.entries(variants)) {
-        out.push(`${pad}${INDENT}${quoteString(variantName)} {`);
+        const head = `${pad}${INDENT}${quoteString(variantName)}`;
+        if (Object.keys(content.metadata).length > 0) {
+          pushWithMetadata(out, head, content.metadata, level + 1);
+          out.push(`${pad}${INDENT}{`);
+        } else {
+          out.push(`${head} {`);
+        }
         pushPrimBody(out, content.properties, content.children, undefined, level + 2);
         out.push(`${pad}${INDENT}}`);
       }

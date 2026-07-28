@@ -125,13 +125,18 @@ function buildLink(path: string, prim: Prim | null): LinkDescription {
   const name = leafName(path);
   if (!prim) return { name, primPath: path, visualPrims: [] };
 
-  // Classify each mesh: collision (collision API, or guide/proxy purpose) vs visual.
+  // Classify each mesh. `purpose` decides whether it renders (USD semantics),
+  // and `PhysicsCollisionAPI` whether it collides — a mesh can be both, which
+  // is how Isaac Sim assets usually ship: one mesh per link, drawn *and*
+  // collided with. Only guide/proxy purposes are collision-only.
   const visualPrims: string[] = [];
   const collisionPrims: string[] = [];
   for (const meshPath of gatherMeshDescendants(prim)) {
     const mp = prim.GetStage().GetPrimAtPath(meshPath);
-    if (mp && (hasCollisionAPI(mp) || isNonVisualPurpose(mp))) collisionPrims.push(meshPath);
-    else visualPrims.push(meshPath);
+    if (!mp) continue;
+    const nonVisual = isNonVisualPurpose(mp);
+    if (!nonVisual) visualPrims.push(meshPath);
+    if (nonVisual || hasCollisionAPI(mp)) collisionPrims.push(meshPath);
   }
   const inertial = getMassProperties(prim);
   const worldTransform = computeWorldTransform(prim);

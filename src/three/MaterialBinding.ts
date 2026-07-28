@@ -42,6 +42,8 @@ export type ResolvedTexture = {
 };
 
 export type ResolvedMaterial = {
+  /** Name of the bound `Material` prim, for round-tripping and debugging. */
+  name?: string;
   color?: Vec3;
   opacity?: number;
   metalness?: number;
@@ -133,7 +135,7 @@ export function resolveBoundMaterial(stage: Stage, prim: Prim): ResolvedMaterial
   const shader = findSurfaceShader(material);
   if (!shader) return undefined;
 
-  const result: ResolvedMaterial = {};
+  const result: ResolvedMaterial = { name: material.GetName() };
   const color = firstColor(shader, DIFFUSE_INPUTS);
   if (color) result.color = color;
   const opacity = firstNumber(shader, OPACITY_INPUTS);

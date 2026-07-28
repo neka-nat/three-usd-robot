@@ -11,6 +11,7 @@ import {
   AssetPath,
   type CompositionArc,
   Quat,
+  type UsdDictionary,
   UsdMatrix,
   type UsdValue,
   type Vec3,
@@ -425,6 +426,10 @@ export class CrateReader {
         return this.readIndexVector(off, "token").items;
       case CrateType.PathVector:
         return this.readIndexVector(off, "path").items;
+      case CrateType.StringVector:
+        return this.readIndexVector(off, "string").items;
+      case CrateType.VariantSelectionMap:
+        return this.readVariantSelectionMap(off);
       default:
         return undefined;
     }
@@ -500,14 +505,41 @@ export class CrateReader {
     return out;
   }
 
+  /**
+   * Read an `SdfVariantSelectionMap`: `[u64 count]` then `count` pairs of
+   * string indexes (`variantSetName → variantName`). Surfaces as a dictionary
+   * so it maps straight onto the USDA `variants = { ... }` metadatum.
+   */
+  private readVariantSelectionMap(off: number): UsdDictionary {
+    const count = this.u64(off);
+    const strings = this.getStrings();
+    const out: UsdDictionary = {};
+    let p = off + 8;
+    for (let i = 0; i < count; i++) {
+      const key = this.getToken(strings[this.view.getUint32(p, true)] ?? 0);
+      const value = this.getToken(strings[this.view.getUint32(p + 4, true)] ?? 0);
+      if (key) out[key] = value;
+      p += 8;
+    }
+    return out;
+  }
+
   /** Read a `[u64 count][count × uint32|int32 index]` vector → resolved strings. */
-  private readIndexVector(off: number, kind: "token" | "path"): { items: string[]; next: number } {
+  private readIndexVector(
+    off: number,
+    kind: "token" | "path" | "string",
+  ): { items: string[]; next: number } {
     const count = this.u64(off);
     let p = off + 8;
     const items = new Array<string>(count);
     for (let i = 0; i < count; i++) {
       const idx = this.view.getInt32(p, true);
-      items[i] = kind === "token" ? this.getToken(idx) : (this.getPaths()[idx] ?? "");
+      items[i] =
+        kind === "token"
+          ? this.getToken(idx)
+          : kind === "string"
+            ? this.getToken(this.getStrings()[idx] ?? 0)
+            : (this.getPaths()[idx] ?? "");
       p += 4;
     }
     return { items, next: p };

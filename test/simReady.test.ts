@@ -40,6 +40,7 @@ def Xform "sim_bot" (
             prepend apiSchemas = ["PhysicsCollisionAPI", "PhysicsMeshCollisionAPI", "MaterialBindingAPI"]
         )
         {
+            uniform token purpose = "guide"
             uniform token physics:approximation = "convexHull"
             int[] faceVertexCounts = [3]
             int[] faceVertexIndices = [0, 1, 2]

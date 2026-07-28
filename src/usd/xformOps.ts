@@ -88,10 +88,11 @@ export function computeLocalTransform(prim: Prim): ResolvedXform {
       opName = opName.slice(INVERT_PREFIX.length);
     }
 
+    // A listed op with no authored attribute is malformed, but shipped assets
+    // do contain it (an op removed while the order was left behind). USD treats
+    // the op as identity rather than failing the whole stage, so do the same.
     const attr = prim.GetAttribute(opName);
-    if (!attr.IsValid()) {
-      throw new Error(`${prim.GetPath()}: xformOpOrder references missing op "${opName}"`);
-    }
+    if (!attr.IsValid()) continue;
 
     // No resolvable value (e.g. time-sampled only — M10 reads defaults) → identity.
     const opValue = attr.Get();

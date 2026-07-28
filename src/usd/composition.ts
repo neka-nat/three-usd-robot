@@ -39,6 +39,13 @@ const ARC_KEYS = ["references", "payload", "payloads", "inherits", "specializes"
 /** Layer + prim metadata keys stripped from the flattened output. */
 const STRIP_KEYS = [...ARC_KEYS, "variants", "variantSets"];
 
+/**
+ * Composed external layers, keyed by resolved URL, shared across one
+ * composition run. Real assets reference the same mesh layer from dozens of
+ * prims; without this each one would refetch and recompose it.
+ */
+export type LayerCache = Map<string, Promise<UsdaFile | null>>;
+
 /** Per-composition context threaded through the recursion. */
 type Ctx = {
   baseUrl: string;
@@ -51,6 +58,7 @@ type Ctx = {
   index: Map<string, PrimSpec>;
   /** Internal prim paths currently being resolved (cycle guard). */
   resolving: ReadonlySet<string>;
+  cache: LayerCache;
 };
 
 /** Parse USDA text and fully compose it. */
@@ -60,8 +68,9 @@ export async function composeLayer(
   resolver: AssetResolver,
   options: ComposeOptions = {},
   stack: ReadonlySet<string> = new Set(),
+  cache: LayerCache = new Map(),
 ): Promise<UsdaFile> {
-  return composeFile(parseUsda(text), baseUrl, resolver, options, stack);
+  return composeFile(parseUsda(text), baseUrl, resolver, options, stack, cache);
 }
 
 /** Compose an already-parsed layer (used by the binary-crate path too). */
@@ -71,6 +80,7 @@ export async function composeFile(
   resolver: AssetResolver,
   options: ComposeOptions = {},
   stack: ReadonlySet<string> = new Set(),
+  cache: LayerCache = new Map(),
 ): Promise<UsdaFile> {
   const warn = options.onWarn ?? (() => {});
 
@@ -78,7 +88,15 @@ export async function composeFile(
   let weak: PrimSpec[] = [];
   const subLayers = toArcs(file.metadata.subLayers);
   for (let i = subLayers.length - 1; i >= 0; i--) {
-    const sub = await loadExternalFile(subLayers[i]!, baseUrl, resolver, options, stack, warn);
+    const sub = await loadExternalFile(
+      subLayers[i]!,
+      baseUrl,
+      resolver,
+      options,
+      stack,
+      warn,
+      cache,
+    );
     if (sub) weak = mergePrimLists(weak, sub.prims);
   }
 
@@ -90,6 +108,7 @@ export async function composeFile(
     stack,
     index: buildPathIndex(file.prims),
     resolving: new Set(),
+    cache,
   };
 
   const resolved: PrimSpec[] = [];
@@ -105,6 +124,7 @@ async function resolvePrim(spec: PrimSpec, parentPath: string, ctx: Ctx): Promis
   // 1. Graft the selected variant content (weaker than direct opinions).
   let properties = spec.properties;
   let children = spec.children;
+  const variantArcs: CompositionArc[] = [];
   const selection = spec.metadata.variants;
   if (spec.variantSets && isDictionary(selection)) {
     for (const [setName, variantName] of Object.entries(selection)) {
@@ -112,6 +132,9 @@ async function resolvePrim(spec: PrimSpec, parentPath: string, ctx: Ctx): Promis
       if (!variant) continue;
       properties = mergeProperties(variant.properties, properties);
       children = mergePrimLists(variant.children, children);
+      // A variant may itself carry references / payloads; they compose as if
+      // authored on the prim, and outrank the prim's own arcs (USD's LIVRPS).
+      for (const key of ARC_KEYS) variantArcs.push(...toArcs(variant.metadata[key]));
     }
   }
 
@@ -130,7 +153,7 @@ async function resolvePrim(spec: PrimSpec, parentPath: string, ctx: Ctx): Promis
   };
 
   // 3. References / payloads / inherits (all weaker than local opinions).
-  const arcs = ARC_KEYS.flatMap((k) => toArcs(spec.metadata[k]));
+  const arcs = [...variantArcs, ...ARC_KEYS.flatMap((k) => toArcs(spec.metadata[k]))];
   let base: PrimSpec | null = null;
   for (const arc of arcs) {
     const target = await loadReferencedPrim(arc, ctx, path);
@@ -144,7 +167,9 @@ async function loadReferencedPrim(
   ctx: Ctx,
   destPath: string,
 ): Promise<PrimSpec | null> {
-  if (arc.assetPath) {
+  // An authored-but-empty asset path (`references = @@</Prim>` in crate) means
+  // "this layer" — an internal arc, not a self-reference to the file.
+  if (arc.assetPath?.path) {
     const composed = await loadExternalFile(
       arc,
       ctx.baseUrl,
@@ -152,6 +177,7 @@ async function loadReferencedPrim(
       ctx.options,
       ctx.stack,
       ctx.warn,
+      ctx.cache,
     );
     if (!composed) return null;
     const target = arc.primPath
@@ -159,7 +185,7 @@ async function loadReferencedPrim(
       : defaultPrim(composed, ctx.warn);
     if (!target) {
       ctx.warn(
-        `reference target ${arc.primPath ?? "(defaultPrim)"} not found in ${arc.assetPath.path}`,
+        `reference target ${arc.primPath ?? "(defaultPrim)"} not found in ${arc.assetPath?.path}`,
       );
       return null;
     }
@@ -198,9 +224,11 @@ async function loadExternalFile(
   options: ComposeOptions,
   stack: ReadonlySet<string>,
   warn: (m: string) => void,
+  cache: LayerCache,
 ): Promise<UsdaFile | null> {
-  if (!arc.assetPath) return null;
-  const url = resolver.resolve(arc.assetPath.path, baseUrl);
+  if (!arc.assetPath?.path) return null;
+  const assetPath = arc.assetPath.path;
+  const url = resolver.resolve(assetPath, baseUrl);
 
   if (stack.has(url)) {
     warn(`composition cycle detected at ${url}; skipping`);
@@ -210,20 +238,37 @@ async function loadExternalFile(
     warn(`composition exceeded max depth at ${url}; skipping`);
     return null;
   }
+  // Cycles are ruled out above, so a cached (possibly in-flight) layer is safe
+  // to share — this is what keeps heavily-referenced mesh layers from being
+  // fetched and composed once per referrer.
+  const cached = cache.get(url);
+  if (cached) return cached;
 
-  let bytes: Uint8Array;
-  try {
-    bytes = await fetchLayerBytes(resolver, url);
-  } catch (err) {
-    warn(`cannot resolve "${arc.assetPath.path}" -> ${url}: ${(err as Error).message}`);
-    return null;
-  }
-  const childStack = new Set([...stack, url]);
-  // External layer may be binary crate (.usdc/.usd) or USDA text.
-  if (CrateReader.isCrate(bytes)) {
-    return composeFile(crateToUsdaFile(new CrateReader(bytes)), url, resolver, options, childStack);
-  }
-  return composeLayer(new TextDecoder().decode(bytes), url, resolver, options, childStack);
+  const pending = (async (): Promise<UsdaFile | null> => {
+    let bytes: Uint8Array;
+    try {
+      bytes = await fetchLayerBytes(resolver, url);
+    } catch (err) {
+      warn(`cannot resolve "${assetPath}" -> ${url}: ${(err as Error).message}`);
+      return null;
+    }
+    const childStack = new Set([...stack, url]);
+    // External layer may be binary crate (.usdc/.usd) or USDA text.
+    if (CrateReader.isCrate(bytes)) {
+      return composeFile(
+        crateToUsdaFile(new CrateReader(bytes)),
+        url,
+        resolver,
+        options,
+        childStack,
+        cache,
+      );
+    }
+    return composeLayer(new TextDecoder().decode(bytes), url, resolver, options, childStack, cache);
+  })();
+
+  cache.set(url, pending);
+  return pending;
 }
 
 /** Fetch raw bytes for a layer, falling back to encoding `fetchText`. */

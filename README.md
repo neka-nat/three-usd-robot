@@ -25,8 +25,26 @@ and drives forward kinematics on a Three.js `Object3D` hierarchy.
   simulation-ready for Isaac Sim.
 - **React** — declarative `<UsdRobot>` for React Three Fiber.
 
-Not yet supported: time samples and variant *selections* stored inside binary
-crate files, and full material/shader fidelity.
+Stock Isaac Sim robot assets load straight from their public CDN — Franka
+Panda, UR10e, Fanuc CRX-10iA/L, Kuka KR210, Shadow Hand, Unitree H1/Go2 and
+friends all compose from their variant-driven, multi-layer form:
+
+```ts
+const ROOT = "https://omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/5.1";
+const franka = await new ThreeUsdRobotLoader()
+  .loadAsync(`${ROOT}/Isaac/Robots/FrankaRobotics/FrankaPanda/franka.usd`);
+
+franka.setJointValues({ panda_joint2: -0.785, panda_joint4: -2.356, panda_joint6: 1.571 });
+franka.getLinkWorldPosition("panda_hand"); // (0.307, 0, 0.590) — the documented ready pose
+```
+
+The CDN is public and CORS-enabled, so this works in the browser too. Try
+`npx tsx scripts/demo-franka.ts` for a console walkthrough (articulation table,
+FK check, and a re-export to one self-contained file), or open the Vite example
+and pick a robot from the preset list.
+
+Not yet supported: time samples stored inside binary crate files, non-mesh
+gprims (`Cube`, `Sphere`, …), and full material/shader fidelity.
 
 ## Install
 

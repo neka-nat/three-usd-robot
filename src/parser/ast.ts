@@ -138,6 +138,11 @@ export type PrimSpec = {
 export type VariantContent = {
   properties: PropertySpec[];
   children: PrimSpec[];
+  /**
+   * Metadata authored on the variant itself. Composition arcs live here — the
+   * common "this variant references another layer" pattern in Isaac Sim assets.
+   */
+  metadata: MetadataMap;
 };
 
 /** `variantSetName → variantName → content`. */
