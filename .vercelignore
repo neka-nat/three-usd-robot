@@ -1,0 +1,12 @@
+# Everything here is either rebuilt on Vercel or irrelevant to the demo build.
+node_modules
+dist
+out
+coverage
+data
+assets
+test
+test-assets
+docs
+*.png
+*.mp4

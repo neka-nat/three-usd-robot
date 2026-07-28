@@ -45,3 +45,4 @@ out/
 
 # Generated demo asset (rebuild with scripts/demo-factory.ts)
 examples/**/factory.usda
+.vercel

@@ -9,6 +9,11 @@ Think of it as a **USD version of [`urdf-loader`](https://www.npmjs.com/package/
 it reads the link / joint / xform / mesh structure out of `UsdPhysics` assets
 and drives forward kinematics on a Three.js `Object3D` hierarchy.
 
+**[▶ Live demo](https://three-usd-robot.vercel.app)** — stock Isaac Sim robots
+streamed from NVIDIA's asset CDN, joints driven from a slider panel, and
+exported back to `.usda` / `.usdz` in the browser.
+
+![A franka panda loaded in the browser](assets/franka.png)
 ![A robot cell loaded in the browser](assets/threejs.png)
 
 ## Features
@@ -216,9 +221,16 @@ and `.usdz` packages to ASCII USDA.
 
 ## Examples
 
-[`examples/`](./examples) holds runnable Vite demos, including a React Three
-Fiber viewer that loads any asset via `?asset=<url>` and exports it back to
-`.usda` / `.usdz`.
+[`examples/`](./examples) holds runnable Vite demos:
+
+- **`vite-joint-slider`** — the [live demo](https://three-usd-robot.vercel.app):
+  vanilla Three.js + `lil-gui`, with a robot picker, joint sliders, animation
+  playback and USD export.
+- **`vite-basic-viewer`** — the same thing through React Three Fiber.
+
+Both take `?asset=<url>` for any asset, or `?isaac=<path under Isaac/>` to pull
+one straight from NVIDIA's CDN. `npm run demo:build` generates the factory cell
+and builds the deployable site.
 
 ## Package entry points
 

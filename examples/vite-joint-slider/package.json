@@ -8,6 +8,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "fflate": "^0.8.3",
     "lil-gui": "^0.20.0",
     "three": "^0.171.0"
   },

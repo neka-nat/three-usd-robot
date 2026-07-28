@@ -48,7 +48,11 @@ import {
 } from "../src/index.js";
 
 const OUT_DIR = new URL("../out/", import.meta.url).pathname;
-const EXAMPLE_PUBLIC = new URL("../examples/vite-basic-viewer/public/", import.meta.url).pathname;
+/** Both example viewers offer the cell as a preset, so ship it to each. */
+const EXAMPLE_PUBLIC_DIRS = [
+  new URL("../examples/vite-basic-viewer/public/", import.meta.url).pathname,
+  new URL("../examples/vite-joint-slider/public/", import.meta.url).pathname,
+];
 
 // ---------------------------------------------------------------------------
 // Material library — one UsdPreviewSurface per entry, shared by every prim
@@ -1216,7 +1220,10 @@ const usda = serializeUsda(factory);
 mkdirSync(OUT_DIR, { recursive: true });
 writeFileSync(`${OUT_DIR}factory.usda`, usda);
 writeFileSync(`${OUT_DIR}factory.usdz`, writeUsdz({ "factory.usda": usda }));
-copyFileSync(`${OUT_DIR}factory.usda`, `${EXAMPLE_PUBLIC}factory.usda`);
+for (const dir of EXAMPLE_PUBLIC_DIRS) {
+  mkdirSync(dir, { recursive: true });
+  copyFileSync(`${OUT_DIR}factory.usda`, `${dir}factory.usda`);
+}
 
 const merged = extractRobotDescription(Stage.OpenFromString(usda));
 const meshCount = Stage.OpenFromString(usda)

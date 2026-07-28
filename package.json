@@ -56,7 +56,10 @@
     "typecheck": "tsc --noEmit",
     "lint": "biome check .",
     "format": "biome format --write .",
-    "check": "biome check --write ."
+    "check": "biome check --write .",
+    "demo:factory": "tsx scripts/demo-factory.ts",
+    "demo:install": "npm install --prefix examples/vite-joint-slider",
+    "demo:build": "npm run demo:factory && npm run build --prefix examples/vite-joint-slider"
   },
   "peerDependencies": {
     "@react-three/fiber": ">=8",
@@ -87,6 +90,7 @@
     "react-test-renderer": "^18.3.1",
     "three": "^0.171.0",
     "tsup": "^8.3.5",
+    "tsx": "^4.23.1",
     "typescript": "^5.7.2",
     "vitest": "^2.1.8"
   },

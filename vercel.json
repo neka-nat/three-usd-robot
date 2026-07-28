@@ -1,0 +1,13 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "buildCommand": "npm run demo:build",
+  "installCommand": "npm install && npm run demo:install",
+  "outputDirectory": "examples/vite-joint-slider/dist",
+  "framework": null,
+  "headers": [
+    {
+      "source": "/(.*)\\.usd(a|c|z)?",
+      "headers": [{ "key": "Cache-Control", "value": "public, max-age=31536000, immutable" }]
+    }
+  ]
+}
