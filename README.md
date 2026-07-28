@@ -26,8 +26,6 @@ const robot = await new ThreeUsdRobotLoader().loadAsync("/assets/robot.usd");
 const robot = await new ThreeUsdRobotLoader().parseCrate(usdcBytes);
 ```
 
-![demo](assets/anim_demo.gif)
-
 ## Install
 
 ```sh
@@ -189,6 +187,24 @@ const issues = validateRobotDescription(desc, { geometry }); // errors + warning
 `python scripts/pxr-validate.py robot.usda robot.usdz` runs pxr's full
 UsdValidation suite (incl. the usdPhysics checkers); in Isaac Sim, File → Open.
 Manual smoke steps live in [`docs/export-design.md`](./docs/export-design.md).
+
+**Full sample**: `npx tsx scripts/demo-factory.ts` authors a complete robot
+cell — a 7-DOF arm with a parallel gripper, a roller conveyor with a prismatic
+belt, a continuous turntable, and scenery (floor markings, walls, wire-mesh
+guarding with a gate, control cabinet, pallet racking, workbench, overhead
+lighting, pallets and free crates) plus a `PhysicsScene` — and exports it as
+`out/factory.usda` / `.usdz`, ready to open in Isaac Sim.
+
+`scripts/render-preview.ts` renders any exported scene to a PNG with no GPU:
+software rasterizer with a shadow map, ambient occlusion, PBR-ish shading from
+the USD `metallic`/`roughness` inputs and 2× supersampling.
+
+```sh
+npx tsx scripts/render-preview.ts out/factory.usda out/factory.png
+# frame a subject and hide foreground guarding:
+npx tsx scripts/render-preview.ts out/factory.usda out/arm.png 1400 1000 \
+  --target=0.75,-0.35,1.0 --radius=1.7 --dir=-1,-1.3,0.55 --clip=1.7
+```
 
 ## Package entry points
 

@@ -50,6 +50,20 @@ export type ResolvedXform = {
  * Compute a prim's local transform from its `xformOpOrder`. Returns identity
  * when the prim authors no `xformOpOrder`.
  */
+/**
+ * Accumulated transform from the stage root down to `prim` — the prim's world
+ * placement as authored (`UsdGeomXformCache::GetLocalToWorldTransform`-like).
+ */
+export function computeWorldTransform(prim: Prim): Mat4 {
+  const chain: Prim[] = [];
+  for (let p: Prim | null = prim; p && !p.IsPseudoRoot(); p = p.GetParent()) chain.push(p);
+  let m = identity4();
+  for (let i = chain.length - 1; i >= 0; i--) {
+    m = multiply(m, computeLocalTransform(chain[i]!).matrix);
+  }
+  return m;
+}
+
 export function computeLocalTransform(prim: Prim): ResolvedXform {
   const orderAttr = prim.GetAttribute("xformOpOrder");
   const order = orderAttr.Get();

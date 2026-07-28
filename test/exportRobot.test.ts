@@ -6,6 +6,7 @@ import {
   type RobotDescription,
   Stage,
   ThreeUsdRobot,
+  ThreeUsdRobotLoader,
   UsdMatrix,
   buildKinematicTree,
   crateToUsdaFile,
@@ -285,6 +286,128 @@ describe("exportRobotUsda — naming", () => {
     // Still parses and re-extracts.
     const reDesc = extractRobotDescription(Stage.OpenFromString(serializeUsda(file)));
     expect(Object.keys(reDesc.links).sort()).toEqual(["arm", "base"]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Multi-articulation stages — authored placements survive
+// ---------------------------------------------------------------------------
+
+const TWO_MACHINES = `#usda 1.0
+(
+    defaultPrim = "cell"
+    metersPerUnit = 1
+    upAxis = "Z"
+)
+
+def Xform "cell"
+{
+    def Xform "m1_base" (
+        prepend apiSchemas = ["PhysicsRigidBodyAPI"]
+    )
+    {
+    }
+
+    def Xform "m2_base" (
+        prepend apiSchemas = ["PhysicsRigidBodyAPI"]
+    )
+    {
+        double3 xformOp:translate = (3, 4, 0.5)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+    }
+
+    def PhysicsFixedJoint "m1_root"
+    {
+        rel physics:body1 = </cell/m1_base>
+    }
+}
+`;
+
+describe("scene geometry (meshes owned by no link)", () => {
+  const CELL = `#usda 1.0
+(
+    defaultPrim = "cell"
+    metersPerUnit = 1
+    upAxis = "Z"
+)
+
+def Xform "cell"
+{
+    def Xform "base" (
+        prepend apiSchemas = ["PhysicsRigidBodyAPI"]
+    )
+    {
+        def Mesh "geom"
+        {
+            int[] faceVertexCounts = [3]
+            int[] faceVertexIndices = [0, 1, 2]
+            point3f[] points = [(0, 0, 0), (1, 0, 0), (0, 1, 0)]
+        }
+    }
+
+    def PhysicsFixedJoint "root_joint"
+    {
+        rel physics:body1 = </cell/base>
+    }
+
+    def Xform "Scenery"
+    {
+        double3 xformOp:translate = (2, 3, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+
+        def Mesh "floor"
+        {
+            int[] faceVertexCounts = [3]
+            int[] faceVertexIndices = [0, 1, 2]
+            point3f[] points = [(0, 0, 0), (4, 0, 0), (0, 4, 0)]
+        }
+
+        def Mesh "floor_collider" (
+            prepend apiSchemas = ["PhysicsCollisionAPI"]
+        )
+        {
+            int[] faceVertexCounts = [3]
+            int[] faceVertexIndices = [0, 1, 2]
+            point3f[] points = [(0, 0, 0), (4, 0, 0), (0, 4, 0)]
+        }
+    }
+}
+`;
+
+  it("is off by default and attaches placed meshes when enabled", async () => {
+    const plain = await new ThreeUsdRobotLoader({ upAxisConversion: "none" }).parse(CELL);
+    expect(plain.children.filter((c) => c.userData.kind === "scene")).toHaveLength(0);
+
+    const withScene = await new ThreeUsdRobotLoader({
+      upAxisConversion: "none",
+      loadSceneGeometry: true,
+    }).parse(CELL);
+    const scenery = withScene.children.filter((c) => c.userData.kind === "scene");
+
+    // The visual mesh rides along at its authored place; the collider twin and
+    // the link's own mesh do not.
+    expect(scenery.map((c) => c.userData.primPath)).toEqual(["/cell/Scenery/floor"]);
+    expect([...scenery[0]!.matrix.elements.slice(12, 15)]).toEqual([2, 3, 0]);
+  });
+});
+
+describe("authored placements for links outside the chosen tree", () => {
+  it("places isolated links by their stage transform, and export keeps it", () => {
+    const desc = extractRobotDescription(Stage.OpenFromString(TWO_MACHINES));
+    expect(desc.links.m2_base!.worldTransform).toBeDefined();
+
+    // Viewer: m1 wins the root (world-fixed); m2 stays where it was authored.
+    const robot = new ThreeUsdRobot(desc, buildKinematicTree(desc));
+    const p = robot.getLinkWorldPosition("m2_base");
+    expect([p.x, p.y, p.z]).toEqual([3, 4, 0.5]);
+
+    // Export writes the placement back; a reload reproduces it.
+    const { reDesc } = roundTripDesc(desc);
+    const robot2 = new ThreeUsdRobot(reDesc, buildKinematicTree(reDesc));
+    const p2 = robot2.getLinkWorldPosition("m2_base");
+    expect(p2.x).toBeCloseTo(3, 10);
+    expect(p2.y).toBeCloseTo(4, 10);
+    expect(p2.z).toBeCloseTo(0.5, 10);
   });
 });
 

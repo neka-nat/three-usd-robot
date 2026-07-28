@@ -47,7 +47,14 @@ function App() {
         <Suspense fallback={null}>
           {/* Bounds auto-frames the robot; the loader normalizes up-axis & units. */}
           <Bounds fit clip observe margin={1.2}>
-            <UsdRobot url={asset} showJointAxes animate onLoad={setRobot} />
+            {/* `loadSceneGeometry` also draws the static cell around the machines. */}
+            <UsdRobot
+              url={asset}
+              loaderOptions={{ loadSceneGeometry: true }}
+              showJointAxes
+              animate
+              onLoad={setRobot}
+            />
           </Bounds>
         </Suspense>
 

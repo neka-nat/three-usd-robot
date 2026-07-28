@@ -18,6 +18,7 @@ export { LinkObject } from "./three/LinkObject.js";
 export {
   type BindMeshesOptions,
   bindRobotMeshes,
+  bindSceneMeshes,
   buildMeshGeometry,
   buildMeshMaterial,
   type MeshKind,

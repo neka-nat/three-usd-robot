@@ -103,6 +103,9 @@ export function exportRobotUsda(
   const linkPath = (key: string) => `/${robotName}/${linkNames.get(key)}`;
 
   // Zero-pose world placement per link, folded root-down along the tree.
+  // Links no joint chain reaches (floating root / isolated) keep their
+  // authored stage placement when the IR carries one.
+  const authoredWorld = (key: string) => desc.links[key]?.worldTransform ?? identity4();
   const worldByLink = new Map<string, Mat4>();
   for (const key of tree.order) {
     const node = tree.nodes[key]!;
@@ -110,7 +113,9 @@ export function exportRobotUsda(
       const rootJoint = tree.rootJoint ? desc.joints[tree.rootJoint] : undefined;
       worldByLink.set(
         key,
-        rootJoint ? multiply(rootJoint.jointFrame0, invert(rootJoint.jointFrame1)) : identity4(),
+        rootJoint
+          ? multiply(rootJoint.jointFrame0, invert(rootJoint.jointFrame1))
+          : authoredWorld(key),
       );
       continue;
     }
@@ -121,7 +126,7 @@ export function exportRobotUsda(
       multiply(multiply(parentWorld, joint.jointFrame0), invert(joint.jointFrame1)),
     );
   }
-  for (const key of tree.isolatedLinks) worldByLink.set(key, identity4());
+  for (const key of tree.isolatedLinks) worldByLink.set(key, authoredWorld(key));
 
   // Articulation root: preserve link-level APIs from the IR; otherwise apply it
   // on the container prim (never both — nested articulation roots are invalid).
@@ -348,6 +353,9 @@ function buildMeshPrim(
   const apiSchemas: string[] = [];
   if (mesh.kind === "collision") {
     apiSchemas.push(COLLISION_API);
+    // `guide` keeps collision shapes out of the render pass (usdview, Isaac Sim,
+    // and this package's own loader) while PhysX still collides with them.
+    properties.push(uniformToken("purpose", "guide"));
     if (mesh.collisionApproximation) {
       apiSchemas.push(MESH_COLLISION_API);
       properties.push(uniformToken("physics:approximation", mesh.collisionApproximation));

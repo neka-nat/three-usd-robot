@@ -12,9 +12,11 @@ import * as THREE from "three";
 import { type Mat4, identity4, multiply } from "../kinematics/transforms.js";
 import type { Vec2, Vec3 } from "../parser/ast.js";
 import type { RobotDescription } from "../robot/RobotDescription.js";
+import { isNonVisualPurpose } from "../schemas/usdGeom.js";
+import { COLLISION_API } from "../schemas/usdPhysics.js";
 import type { Prim } from "../usd/Prim.js";
 import type { Stage } from "../usd/Stage.js";
-import { computeLocalTransform } from "../usd/xformOps.js";
+import { computeLocalTransform, computeWorldTransform } from "../usd/xformOps.js";
 import { type ResolvedTexture, resolveBoundMaterial } from "./MaterialBinding.js";
 import type { TextureProvider } from "./TextureBinding.js";
 import type { ThreeUsdRobot } from "./ThreeUsdRobot.js";
@@ -197,6 +199,47 @@ export function bindRobotMeshes(
       }
     }
   }
+}
+
+/**
+ * Attach the Mesh prims that belong to no link — the static scenery of a cell
+ * that also contains robots. They are placed by their authored stage transform
+ * under the robot root, so the loader's up-axis and unit normalization applies
+ * to them too. Collision-only and guide/proxy prims are skipped.
+ */
+export function bindSceneMeshes(
+  stage: Stage,
+  robot3d: ThreeUsdRobot,
+  desc: RobotDescription,
+  options: { textureProvider?: TextureProvider } = {},
+): number {
+  const owned = new Set<string>();
+  for (const link of Object.values(desc.links)) {
+    for (const path of link.visualPrims) owned.add(path);
+    for (const path of link.collisionPrims ?? []) owned.add(path);
+    owned.add(link.primPath);
+  }
+
+  let attached = 0;
+  for (const prim of stage.Traverse()) {
+    if (prim.GetTypeName() !== "Mesh" || owned.has(prim.GetPath())) continue;
+    if (prim.HasAPI(COLLISION_API) || isNonVisualPurpose(prim)) continue;
+    // Skip meshes under a link (already bound relative to their link).
+    if ([...owned].some((path) => prim.GetPath().startsWith(`${path}/`))) continue;
+
+    const geometry = buildMeshGeometry(prim);
+    if (!geometry) continue;
+    const mesh = new THREE.Mesh(geometry, buildMeshMaterial(prim, stage, options.textureProvider));
+    mesh.name = prim.GetName();
+    mesh.userData.kind = "scene";
+    mesh.userData.primPath = prim.GetPath();
+    mesh.matrixAutoUpdate = false;
+    mesh.matrix.fromArray(computeWorldTransform(prim));
+    mesh.matrixWorldNeedsUpdate = true;
+    robot3d.add(mesh);
+    attached++;
+  }
+  return attached;
 }
 
 function attachMesh(

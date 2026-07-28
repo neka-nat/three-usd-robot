@@ -39,3 +39,9 @@ arm-anim.png
 texture-demo.png
 r3f-demo.png
 examples/**/package-lock.json
+
+# Generated demo output
+out/
+
+# Generated demo asset (rebuild with scripts/demo-factory.ts)
+examples/**/factory.usda

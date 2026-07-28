@@ -97,10 +97,14 @@ export class ThreeUsdRobot extends THREE.Object3D {
     const rootObj = this.linkObjects.get(this.tree.root);
     if (!rootObj) return; // empty robot
     const rootJointKey = this.tree.rootJoint;
+    const rootLink = this.robot.links[this.tree.root];
     if (rootJointKey) {
       const j = this.robot.joints[rootJointKey];
       // World-fixed placement: jointFrame0 (in world) · inverse(jointFrame1).
       if (j) setMatrix(rootObj, multiply(j.jointFrame0, invert(j.jointFrame1)));
+    } else if (rootLink?.worldTransform) {
+      // Floating base: keep the authored stage placement.
+      setMatrix(rootObj, rootLink.worldTransform);
     }
     this.add(rootObj);
   }
@@ -147,7 +151,12 @@ export class ThreeUsdRobot extends THREE.Object3D {
   private attachIsolatedLinks(): void {
     for (const key of this.tree.isolatedLinks) {
       const obj = this.linkObjects.get(key);
-      if (obj && !obj.parent) this.add(obj);
+      if (!obj || obj.parent) continue;
+      // Not placeable by any joint chain — keep the authored stage placement
+      // (other machines / free bodies on a multi-articulation stage).
+      const worldTransform = this.robot.links[key]?.worldTransform;
+      if (worldTransform) setMatrix(obj, worldTransform);
+      this.add(obj);
     }
   }
 

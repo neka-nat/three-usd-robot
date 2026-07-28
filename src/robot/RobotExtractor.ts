@@ -8,6 +8,7 @@
  * is written back into `rootLink` / `loopJoints`.
  */
 
+import type { Mat4 } from "../kinematics/transforms.js";
 import { gatherMeshDescendants, isNonVisualPurpose } from "../schemas/usdGeom.js";
 import {
   driveKindFor,
@@ -25,6 +26,7 @@ import {
 } from "../schemas/usdPhysics.js";
 import type { Prim } from "../usd/Prim.js";
 import type { Stage } from "../usd/Stage.js";
+import { computeWorldTransform } from "../usd/xformOps.js";
 import type {
   JointDescription,
   JointDriveDescription,
@@ -132,13 +134,22 @@ function buildLink(path: string, prim: Prim | null): LinkDescription {
     else visualPrims.push(meshPath);
   }
   const inertial = getMassProperties(prim);
+  const worldTransform = computeWorldTransform(prim);
   return {
     name,
     primPath: path,
     visualPrims,
     ...(collisionPrims.length ? { collisionPrims } : {}),
     ...(inertial ? { inertial } : {}),
+    ...(isIdentityMat4(worldTransform) ? {} : { worldTransform }),
   };
+}
+
+function isIdentityMat4(m: Mat4): boolean {
+  for (let i = 0; i < 16; i++) {
+    if (m[i] !== (i % 5 === 0 ? 1 : 0)) return false;
+  }
+  return true;
 }
 
 function buildJoint(

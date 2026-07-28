@@ -163,6 +163,8 @@ export class RobotBuilder {
         primPath: `/${this.robotName}/${name}`,
         visualPrims: [],
         ...(link.inertial ? { inertial: link.inertial } : {}),
+        // Authored placement, so links no joint reaches keep their build pose.
+        ...(isIdentityMat4(link.world) ? {} : { worldTransform: link.world }),
       };
     }
 
@@ -286,6 +288,13 @@ export class RobotBuilder {
     }
     return this.materialCache.get(material);
   }
+}
+
+function isIdentityMat4(m: Mat4): boolean {
+  for (let i = 0; i < 16; i++) {
+    if (m[i] !== (i % 5 === 0 ? 1 : 0)) return false;
+  }
+  return true;
 }
 
 /** World matrix of a frame argument (`matrixWorld` refreshed for objects). */

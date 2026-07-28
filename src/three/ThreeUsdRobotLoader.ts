@@ -7,7 +7,7 @@ import { composeFile, composeLayer } from "../usd/composition.js";
 import { CrateReader } from "../usd/crate/CrateReader.js";
 import { crateToUsdaFile } from "../usd/crate/toUsdaFile.js";
 import { openUsdz } from "../usd/usdz.js";
-import { bindRobotMeshes } from "./MeshBinding.js";
+import { bindRobotMeshes, bindSceneMeshes } from "./MeshBinding.js";
 import { createTextureProvider } from "./TextureBinding.js";
 import { ThreeUsdRobot, type ThreeUsdRobotOptions } from "./ThreeUsdRobot.js";
 
@@ -18,6 +18,12 @@ export type ThreeUsdRobotLoaderOptions = {
   loadVisuals?: boolean;
   /** Render collision meshes (M6). */
   loadCollisions?: boolean;
+  /**
+   * Also render Mesh prims that belong to no link — the static scenery of a
+   * cell that contains robots (floor, guarding, racking, …). Placed by their
+   * authored stage transform. Default `false`.
+   */
+  loadSceneGeometry?: boolean;
   /** Load diffuse textures referenced by materials (default `true`). */
   loadTextures?: boolean;
   /** Up-axis correction strategy (M9). */
@@ -107,14 +113,22 @@ export class ThreeUsdRobotLoader {
 
     const loadVisuals = this.options.loadVisuals ?? true;
     const loadCollisions = this.options.loadCollisions ?? false;
-    if (loadVisuals || loadCollisions) {
+    const loadScene = this.options.loadSceneGeometry ?? false;
+    if (loadVisuals || loadCollisions || loadScene) {
       const textureProvider =
         (this.options.loadTextures ?? true) ? createTextureProvider(resolver, baseUrl) : undefined;
-      bindRobotMeshes(stage, robot3d, robot, {
-        loadVisuals,
-        loadCollisions,
-        ...(textureProvider ? { textureProvider } : {}),
-      });
+      if (loadVisuals || loadCollisions) {
+        bindRobotMeshes(stage, robot3d, robot, {
+          loadVisuals,
+          loadCollisions,
+          ...(textureProvider ? { textureProvider } : {}),
+        });
+      }
+      if (loadScene) {
+        bindSceneMeshes(stage, robot3d, robot, {
+          ...(textureProvider ? { textureProvider } : {}),
+        });
+      }
     }
     return robot3d;
   }

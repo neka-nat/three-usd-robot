@@ -51,6 +51,13 @@ export type LinkDescription = {
   collisionPrims?: string[];
   /** Mass properties (`UsdPhysicsMassAPI`), if authored (M16). */
   inertial?: LinkInertialDescription;
+  /**
+   * Authored stage (world) transform of the link prim, when not identity.
+   * Joint chains place tree links; this places floating roots and links that
+   * are isolated from the chosen tree (e.g. other machines / free bodies on a
+   * multi-articulation stage).
+   */
+  worldTransform?: Mat4;
 };
 
 /** Mass properties as authored by `UsdPhysicsMassAPI` (stage units). */
