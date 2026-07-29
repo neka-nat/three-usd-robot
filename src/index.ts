@@ -19,6 +19,7 @@ export {
   type BindMeshesOptions,
   bindRobotMeshes,
   bindSceneMeshes,
+  buildGprimGeometry,
   buildMeshGeometry,
   buildMeshMaterial,
   type MeshKind,

@@ -14,6 +14,25 @@ export function isMesh(prim: Prim): boolean {
   return prim.GetTypeName() === "Mesh";
 }
 
+/** Parametric solid gprim schemas — geometry defined by attributes, not topology. */
+const SOLID_GPRIM_TYPES: ReadonlySet<string> = new Set([
+  "Cube",
+  "Sphere",
+  "Cylinder",
+  "Capsule",
+  "Cone",
+]);
+
+/** True for a `Cube` / `Sphere` / `Cylinder` / `Capsule` / `Cone` prim. */
+export function isSolidGprim(prim: Prim): boolean {
+  return SOLID_GPRIM_TYPES.has(prim.GetTypeName());
+}
+
+/** True for any gprim the runtime can render: a `Mesh` or a parametric solid. */
+export function isRenderableGprim(prim: Prim): boolean {
+  return isMesh(prim) || isSolidGprim(prim);
+}
+
 /** `UsdGeomImageable.purpose` token; defaults to `"default"`. */
 export function getPurpose(prim: Prim): string {
   const v = prim.GetAttribute("purpose").Get();
@@ -73,6 +92,15 @@ export function gatherMeshDescendants(prim: Prim): string[] {
   const paths: string[] = [];
   for (const d of iterDescendants(prim)) {
     if (isMesh(d)) paths.push(d.GetPath());
+  }
+  return paths;
+}
+
+/** Collect the prim paths of all renderable gprim descendants (meshes + solids). */
+export function gatherGprimDescendants(prim: Prim): string[] {
+  const paths: string[] = [];
+  for (const d of iterDescendants(prim)) {
+    if (isRenderableGprim(d)) paths.push(d.GetPath());
   }
   return paths;
 }

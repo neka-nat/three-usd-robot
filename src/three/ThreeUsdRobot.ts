@@ -35,6 +35,12 @@ export type ThreeUsdRobotOptions = {
  * `parentLink → jointFrame0 → jointMotion → jointFrame1⁻¹ → childLink`,
  * where only `jointMotion` (a {@link JointObject}) changes with the joint value;
  * world poses then fall out of Three.js's `updateMatrixWorld`.
+ *
+ * **Naming contract** — a link/joint's key is its prim's leaf name when that
+ * is unique across the robot, else its full prim path (deterministic; see the
+ * extractor). Every accessor taking a name equally accepts the full prim path,
+ * which is stable regardless of collisions; {@link getLinkObjectsByPath} /
+ * {@link getJointObjectsByPath} enumerate the path-keyed tables.
  */
 export class ThreeUsdRobot extends THREE.Object3D {
   readonly isThreeUsdRobot = true;
@@ -44,6 +50,8 @@ export class ThreeUsdRobot extends THREE.Object3D {
 
   private readonly linkObjects = new Map<string, LinkObject>();
   private readonly jointObjects = new Map<string, JointObject>();
+  private readonly linkKeyByPath = new Map<string, string>();
+  private readonly jointKeyByPath = new Map<string, string>();
   private dirty = true;
 
   private readonly helperSize: number;
@@ -62,9 +70,13 @@ export class ThreeUsdRobot extends THREE.Object3D {
     this.clampJointLimits = options.clampJointLimits ?? true;
     this.helperSize = options.helperSize ?? 0.15;
 
-    // Create a node for every link up front.
+    // Create a node for every link up front; index links and joints by path.
     for (const [key, link] of Object.entries(robot.links)) {
       this.linkObjects.set(key, new LinkObject(link));
+      this.linkKeyByPath.set(link.primPath, key);
+    }
+    for (const [key, joint] of Object.entries(robot.joints)) {
+      this.jointKeyByPath.set(joint.primPath, key);
     }
 
     this.attachRoot();
@@ -160,11 +172,28 @@ export class ThreeUsdRobot extends THREE.Object3D {
     }
   }
 
+  // -- Naming --------------------------------------------------------------
+
+  /** Resolve a link reference — key or full prim path — to the extractor key. */
+  private linkKey(ref: string): string {
+    if (this.linkObjects.has(ref)) return ref;
+    return this.linkKeyByPath.get(ref) ?? ref;
+  }
+
+  /** Resolve a joint reference — key or full prim path — to the extractor key. */
+  private jointKey(ref: string): string {
+    if (this.jointObjects.has(ref)) return ref;
+    return this.jointKeyByPath.get(ref) ?? ref;
+  }
+
   // -- Joint control -------------------------------------------------------
 
-  /** Set one joint value. Unknown joints are ignored. Returns whether it applied. */
+  /**
+   * Set one joint value, addressed by key or full prim path. Unknown joints
+   * are ignored. Returns whether it applied.
+   */
   setJointValue(name: string, value: number): boolean {
-    const joint = this.jointObjects.get(name);
+    const joint = this.jointObjects.get(this.jointKey(name));
     if (!joint) return false;
     joint.setValue(value, this.clampJointLimits);
     this.dirty = true;
@@ -174,7 +203,7 @@ export class ThreeUsdRobot extends THREE.Object3D {
   /** Set several joint values at once (matrix update is coalesced). */
   setJointValues(values: Record<string, number>): void {
     for (const [name, value] of Object.entries(values)) {
-      const joint = this.jointObjects.get(name);
+      const joint = this.jointObjects.get(this.jointKey(name));
       if (joint) {
         joint.setValue(value, this.clampJointLimits);
         this.dirty = true;
@@ -183,7 +212,7 @@ export class ThreeUsdRobot extends THREE.Object3D {
   }
 
   getJointValue(name: string): number | undefined {
-    return this.jointObjects.get(name)?.value;
+    return this.jointObjects.get(this.jointKey(name))?.value;
   }
 
   /** Recompute world matrices. Called lazily by the getters; safe to call directly. */
@@ -198,8 +227,9 @@ export class ThreeUsdRobot extends THREE.Object3D {
 
   // -- Queries -------------------------------------------------------------
 
+  /** World matrix of a link, addressed by key or full prim path. */
   getLinkWorldMatrix(name: string): THREE.Matrix4 {
-    const obj = this.linkObjects.get(name);
+    const obj = this.linkObjects.get(this.linkKey(name));
     if (!obj) throw new Error(`unknown link "${name}"`);
     this.ensureUpdated();
     return obj.matrixWorld.clone();
@@ -209,12 +239,40 @@ export class ThreeUsdRobot extends THREE.Object3D {
     return new THREE.Vector3().setFromMatrixPosition(this.getLinkWorldMatrix(name));
   }
 
+  /** Link object by key or full prim path. */
   getLinkObject(name: string): LinkObject | undefined {
-    return this.linkObjects.get(name);
+    return this.linkObjects.get(this.linkKey(name));
   }
 
+  /** Joint object by key or full prim path. */
   getJointObject(name: string): JointObject | undefined {
-    return this.jointObjects.get(name);
+    return this.jointObjects.get(this.jointKey(name));
+  }
+
+  /**
+   * Table of link prim path → {@link LinkObject}. Prim paths are the
+   * collision-proof way to pin a link (e.g. to attach tools or gizmos).
+   */
+  getLinkObjectsByPath(): Map<string, LinkObject> {
+    const out = new Map<string, LinkObject>();
+    for (const [path, key] of this.linkKeyByPath) {
+      const obj = this.linkObjects.get(key);
+      if (obj) out.set(path, obj);
+    }
+    return out;
+  }
+
+  /**
+   * Table of joint prim path → {@link JointObject}, covering the joints
+   * realized in the kinematic tree (loop joints have no motion node).
+   */
+  getJointObjectsByPath(): Map<string, JointObject> {
+    const out = new Map<string, JointObject>();
+    for (const [path, key] of this.jointKeyByPath) {
+      const obj = this.jointObjects.get(key);
+      if (obj) out.set(path, obj);
+    }
+    return out;
   }
 
   getJoints(): JointDescription[] {

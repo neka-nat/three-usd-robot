@@ -1,18 +1,25 @@
 /**
- * Binds `UsdGeom.Mesh` prims to Three.js geometry and attaches them under the
- * robot's link objects.
+ * Binds renderable gprims — `UsdGeom.Mesh` plus the parametric solids (`Cube` /
+ * `Sphere` / `Cylinder` / `Capsule` / `Cone`) — to Three.js geometry and
+ * attaches them under the robot's link objects.
  *
- * Triangulates polygons with a simple fan, uses authored per-vertex normals
- * when present (else computes smooth normals), and reads `primvars:st` UVs and
- * `primvars:displayColor`. Geometry is left in stage units; the global
- * `metersPerUnit` scale is applied at the root in M9.
+ * Meshes are triangulated with a simple fan, use authored per-vertex normals
+ * when present (else computed smooth normals), and read `primvars:st` UVs and
+ * `primvars:displayColor`. Solids tessellate from their schema attributes.
+ * Geometry is left in stage units; the global `metersPerUnit` scale is applied
+ * at the root in M9.
  */
 
 import * as THREE from "three";
 import { type Mat4, identity4, multiply } from "../kinematics/transforms.js";
 import type { Vec2, Vec3 } from "../parser/ast.js";
 import type { RobotDescription } from "../robot/RobotDescription.js";
-import { type MaterialSubset, getMaterialSubsets, isNonVisualPurpose } from "../schemas/usdGeom.js";
+import {
+  type MaterialSubset,
+  getMaterialSubsets,
+  isNonVisualPurpose,
+  isRenderableGprim,
+} from "../schemas/usdGeom.js";
 import { COLLISION_API } from "../schemas/usdPhysics.js";
 import type { Prim } from "../usd/Prim.js";
 import type { Stage } from "../usd/Stage.js";
@@ -76,7 +83,57 @@ export function buildMeshGeometry(meshPrim: Prim): THREE.BufferGeometry | null {
 }
 
 /**
- * Build a material for a Mesh prim. Color priority: bound `UsdShade` material
+ * Build geometry for any renderable gprim: `Mesh` via {@link buildMeshGeometry},
+ * parametric solids from their schema attributes. Solids follow UsdGeom
+ * semantics — sizes in stage units, centered at the origin, `axis` (default
+ * `"Z"`) along the spine, and a capsule's `height` spans only its cylindrical
+ * section. Returns `null` for unsupported prim types.
+ */
+export function buildGprimGeometry(prim: Prim): THREE.BufferGeometry | null {
+  switch (prim.GetTypeName()) {
+    case "Mesh":
+      return buildMeshGeometry(prim);
+    case "Cube": {
+      const size = getNumber(prim, "size") ?? 2;
+      return new THREE.BoxGeometry(size, size, size);
+    }
+    case "Sphere":
+      return new THREE.SphereGeometry(getNumber(prim, "radius") ?? 1, 32, 16);
+    case "Cylinder": {
+      const radius = getNumber(prim, "radius") ?? 1;
+      const height = getNumber(prim, "height") ?? 2;
+      return orientSpine(new THREE.CylinderGeometry(radius, radius, height, 32), prim);
+    }
+    case "Capsule": {
+      const radius = getNumber(prim, "radius") ?? 0.5;
+      const height = getNumber(prim, "height") ?? 1;
+      return orientSpine(new THREE.CapsuleGeometry(radius, height, 8, 32), prim);
+    }
+    case "Cone": {
+      const radius = getNumber(prim, "radius") ?? 1;
+      const height = getNumber(prim, "height") ?? 2;
+      return orientSpine(new THREE.ConeGeometry(radius, height, 32), prim);
+    }
+    default:
+      return null;
+  }
+}
+
+function getNumber(prim: Prim, name: string): number | undefined {
+  const v = prim.GetAttribute(name).Get();
+  return typeof v === "number" ? v : undefined;
+}
+
+/** Rotate a Y-spined three.js primitive onto the prim's `axis` (USD default `Z`). */
+function orientSpine(geometry: THREE.BufferGeometry, prim: Prim): THREE.BufferGeometry {
+  const axis = prim.GetAttribute("axis").Get();
+  if (axis === "Y") return geometry;
+  if (axis === "X") return geometry.rotateZ(-Math.PI / 2);
+  return geometry.rotateX(Math.PI / 2);
+}
+
+/**
+ * Build a material for a gprim. Color priority: bound `UsdShade` material
  * (when `stage` is given) → `primvars:displayColor` → default gray. Textures
  * (via `textures`) become the matching `MeshStandardMaterial` maps — diffuse →
  * `map` (sRGB), plus `normalMap` / `roughnessMap` / `metalnessMap` / `aoMap`
@@ -220,8 +277,8 @@ export function bindRobotMeshes(
 }
 
 /**
- * Attach the Mesh prims that belong to no link — the static scenery of a cell
- * that also contains robots. They are placed by their authored stage transform
+ * Attach the gprims that belong to no link — the static scenery of a cell that
+ * also contains robots. They are placed by their authored stage transform
  * under the robot root, so the loader's up-axis and unit normalization applies
  * to them too. Collision-only and guide/proxy prims are skipped.
  */
@@ -240,12 +297,12 @@ export function bindSceneMeshes(
 
   let attached = 0;
   for (const prim of stage.Traverse()) {
-    if (prim.GetTypeName() !== "Mesh" || owned.has(prim.GetPath())) continue;
+    if (!isRenderableGprim(prim) || owned.has(prim.GetPath())) continue;
     if (prim.HasAPI(COLLISION_API) || isNonVisualPurpose(prim)) continue;
-    // Skip meshes under a link (already bound relative to their link).
+    // Skip gprims under a link (already bound relative to their link).
     if ([...owned].some((path) => prim.GetPath().startsWith(`${path}/`))) continue;
 
-    const geometry = buildMeshGeometry(prim);
+    const geometry = buildGprimGeometry(prim);
     if (!geometry) continue;
     const mesh = new THREE.Mesh(geometry, buildMeshMaterial(prim, stage, options.textureProvider));
     mesh.name = prim.GetName();
@@ -288,7 +345,7 @@ function attachMesh(
 ): void {
   const meshPrim = stage.GetPrimAtPath(meshPath);
   if (!meshPrim) return;
-  const geometry = buildMeshGeometry(meshPrim);
+  const geometry = buildGprimGeometry(meshPrim);
   if (!geometry) return;
 
   const mesh = new THREE.Mesh(geometry, buildMeshMaterials(meshPrim, stage, textures));

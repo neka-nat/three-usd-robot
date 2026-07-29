@@ -15,6 +15,18 @@ import { CrateReader } from "./crate/CrateReader.js";
 
 const USD_ENTRY = /\.(usda|usdc|usd)$/i;
 
+/**
+ * True when the bytes start with a zip magic (`PK\x03\x04`, or the empty /
+ * spanned archive markers). A `.usdz` always begins with a local file header,
+ * so this is the sniff counterpart of {@link CrateReader.isCrate}.
+ */
+export function isZip(bytes: Uint8Array): boolean {
+  if (bytes.length < 4 || bytes[0] !== 0x50 || bytes[1] !== 0x4b) return false;
+  const a = bytes[2];
+  const b = bytes[3];
+  return (a === 3 && b === 4) || (a === 5 && b === 6) || (a === 7 && b === 8);
+}
+
 export type UsdzPackage = {
   /** Archive path of the root layer to open. */
   rootEntry: string;

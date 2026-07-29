@@ -75,9 +75,10 @@ export {
   DefaultAssetResolver,
   joinPosix,
 } from "./usd/AssetResolver.js";
+export { type BinarySource, toBytes, type UsdSource } from "./usd/bytes.js";
 export { type ComposeOptions, composeFile, composeLayer } from "./usd/composition.js";
 export { computeWorldTransform } from "./usd/xformOps.js";
-export { openUsdz, type UsdzPackage } from "./usd/usdz.js";
+export { isZip, openUsdz, type UsdzPackage } from "./usd/usdz.js";
 export { CrateReader } from "./usd/crate/CrateReader.js";
 export { crateToUsdaFile } from "./usd/crate/toUsdaFile.js";
 
@@ -136,9 +137,12 @@ export {
 
 // USD schema accessors
 export {
+  gatherGprimDescendants,
   gatherMeshDescendants,
   isMesh,
+  isRenderableGprim,
   isScope,
+  isSolidGprim,
   isXform,
   iterDescendants,
 } from "./schemas/usdGeom.js";

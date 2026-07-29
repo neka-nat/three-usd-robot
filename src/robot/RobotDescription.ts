@@ -45,9 +45,9 @@ export type LinkDescription = {
   /** Display name (leaf prim name). */
   name: string;
   primPath: string;
-  /** Mesh prim paths to render. */
+  /** Renderable gprim paths (Mesh / Cube / Sphere / Cylinder / Capsule / Cone). */
   visualPrims: string[];
-  /** Mesh prim paths flagged with a collision API. */
+  /** Gprim paths flagged with a collision API (or a non-visual purpose). */
   collisionPrims?: string[];
   /** Mass properties (`UsdPhysicsMassAPI`), if authored (M16). */
   inertial?: LinkInertialDescription;

@@ -23,8 +23,10 @@ exported back to `.usda` / `.usdz` in the browser.
   instanceable prims are composed for you.
 - **Robots** — links, joints (fixed / revolute / continuous / prismatic), limits,
   drives and the initial pose become a `setJointValue`-able hierarchy.
-- **Rendering** — meshes with `UsdShade` materials (UsdPreviewSurface / OmniPBR)
-  and textures; up-axis and units normalized automatically.
+- **Rendering** — meshes and solid gprims (`Cube` / `Sphere` / `Cylinder` /
+  `Capsule` / `Cone`) with `UsdShade` materials (UsdPreviewSurface / OmniPBR)
+  and textures; up-axis and units normalized automatically. Articulation-free
+  stages load as static scenes.
 - **Animation** — plays back time-sampled joint trajectories.
 - **Export** — write robots and whole cells back to `.usda` / `.usdz`,
   simulation-ready for Isaac Sim.
@@ -48,8 +50,8 @@ The CDN is public and CORS-enabled, so this works in the browser too. Try
 FK check, and a re-export to one self-contained file), or open the Vite example
 and pick a robot from the preset list.
 
-Not yet supported: time samples stored inside binary crate files, non-mesh
-gprims (`Cube`, `Sphere`, …), and full material/shader fidelity.
+Not yet supported: time samples stored inside binary crate files, point/curve
+gprims (`Points`, `BasisCurves`, …), and full material/shader fidelity.
 
 ## Install
 
@@ -79,8 +81,38 @@ robot.getJointNames(); // controllable joints
 robot.getKinematicTree(); // root, ordering, loop joints, ...
 ```
 
-Already have the bytes? Use `parse(usdaText)`, `parseCrate(usdcBytes)` or
-`parseUsdz(bytes)` instead of `loadAsync`.
+No URL? `parse` also takes in-memory content: USDA source text, or an
+`ArrayBuffer` / typed array / `Blob` holding any supported format — the zip /
+crate magic is sniffed, so a dropped `File` or a response body works as-is:
+
+```ts
+const loader = new ThreeUsdRobotLoader();
+await loader.parse(usdaText); // USDA source string
+await loader.parse(file); // File / Blob from drag & drop or <input type="file">
+await loader.parse(await res.arrayBuffer()); // a fetch you did yourself
+```
+
+`parseUsdz(data)` / `parseCrate(data, baseUrl)` stay as explicit-format entries,
+and `parseRobotDescription(data)` returns the Three.js-independent IR. Pass a
+`baseUrl` as the second `parse` argument if the layer has relative references
+or texture paths to resolve.
+
+### Stable addressing (naming contract)
+
+Joints and links are keyed by their prim's **leaf name** while it is unique
+across the robot; on a collision (say, two arms each with a `seg` link) the
+colliding entries are keyed by their **full prim path** instead —
+deterministically. Every accessor also takes the full prim path directly, so
+tooling can pin exact prims no matter how the asset is named:
+
+```ts
+robot.setJointValue("/World/armL/j1", 0.4); // same joint as its key
+robot.getLinkWorldMatrix("/World/armL/seg");
+robot.getLinkObjectsByPath(); // Map<primPath, LinkObject>
+robot.getJointObjectsByPath(); // Map<primPath, JointObject>
+```
+
+`LinkObject.primPath` / `JointObject.primPath` carry the reverse direction.
 
 ### Viewer toggles & helpers
 
@@ -94,9 +126,38 @@ import { addJointLimitHelpers } from "three-usd-robot/helpers";
 addJointLimitHelpers(robot); // arc (revolute) / segment (prismatic) per joint
 ```
 
+### Link highlighting & ghosts
+
+Per-link appearance helpers cover the common viewer chores — flagging
+colliding links, material swaps, and translucent "ghost" pose previews:
+
+```ts
+import {
+  createGhostRobot,
+  highlightLink,
+  restoreLinkMaterials,
+  setLinkMaterial,
+} from "three-usd-robot/helpers";
+
+highlightLink(robot, "link1"); // emissive red tint; maps/colors kept
+highlightLink(robot, "/World/armL/seg", { color: 0xffaa00, opacity: 0.6 });
+setLinkMaterial(robot, "link2", new THREE.MeshBasicMaterial({ wireframe: true }));
+restoreLinkMaterials(robot, "link1"); // exact original materials back
+
+const ghost = createGhostRobot(robot, { jointValues: { joint1: 1.2 } });
+scene.add(ghost); // translucent copy previewing the target pose
+ghost.setJointValues(ikSolution); // a full ThreeUsdRobot, driveable like the source
+```
+
+Highlights never stack (each call re-tints from the originals), and ghosts
+share the source's geometry — cloning is cheap enough for onion-skinning.
+
 Loading a whole cell rather than a bare robot? Pass
 `{ loadSceneGeometry: true }` to the loader to draw the static environment
-(floor, guarding, racking, …) around the machines.
+(floor, guarding, racking, …) around the machines. A stage with **no
+articulation at all** — a plain static USD scene — is detected and rendered as
+scene geometry automatically, with the same unit / up-axis normalization; pass
+`loadSceneGeometry: false` to opt out.
 
 ### Joint slider panel (lil-gui)
 

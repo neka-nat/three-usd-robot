@@ -11,6 +11,8 @@ import { axisVector } from "./axis.js";
 export class JointObject extends THREE.Object3D {
   readonly isJointObject = true;
   readonly jointName: string;
+  /** Full USD prim path of the joint — the collision-proof address. */
+  readonly primPath: string;
   readonly jointType: JointType;
   readonly axisToken: Axis;
   readonly axis: THREE.Vector3;
@@ -23,6 +25,7 @@ export class JointObject extends THREE.Object3D {
     super();
     this.name = joint.name;
     this.jointName = joint.name;
+    this.primPath = joint.primPath;
     this.jointType = joint.type;
     this.axisToken = joint.axis;
     this.axis = axisVector(joint.axis);

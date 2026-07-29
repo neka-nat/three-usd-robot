@@ -3,10 +3,11 @@ import { extractRobotDescription } from "../robot/RobotExtractor.js";
 import { buildKinematicTree } from "../robot/buildKinematicTree.js";
 import { type AssetResolver, DefaultAssetResolver } from "../usd/AssetResolver.js";
 import { Stage } from "../usd/Stage.js";
+import { type BinarySource, type UsdSource, toBytes } from "../usd/bytes.js";
 import { composeFile, composeLayer } from "../usd/composition.js";
 import { CrateReader } from "../usd/crate/CrateReader.js";
 import { crateToUsdaFile } from "../usd/crate/toUsdaFile.js";
-import { openUsdz } from "../usd/usdz.js";
+import { isZip, openUsdz } from "../usd/usdz.js";
 import { bindRobotMeshes, bindSceneMeshes } from "./MeshBinding.js";
 import { createTextureProvider } from "./TextureBinding.js";
 import { ThreeUsdRobot, type ThreeUsdRobotOptions } from "./ThreeUsdRobot.js";
@@ -19,9 +20,10 @@ export type ThreeUsdRobotLoaderOptions = {
   /** Render collision meshes (M6). */
   loadCollisions?: boolean;
   /**
-   * Also render Mesh prims that belong to no link — the static scenery of a
-   * cell that contains robots (floor, guarding, racking, …). Placed by their
-   * authored stage transform. Default `false`.
+   * Also render gprims that belong to no link — the static scenery of a cell
+   * that contains robots (floor, guarding, racking, …). Placed by their
+   * authored stage transform. Default `false`; a stage with no articulation at
+   * all (a pure static scene) defaults to `true` so it renders out of the box.
    */
   loadSceneGeometry?: boolean;
   /** Load diffuse textures referenced by materials (default `true`). */
@@ -40,9 +42,14 @@ export type ThreeUsdRobotLoaderOptions = {
   onWarn?: (message: string) => void;
 };
 
+/** A composed stage plus the context needed to bind its meshes and textures. */
+type OpenedStage = { stage: Stage; baseUrl: string; resolver: AssetResolver };
+
 /**
  * Loads Isaac Sim / OpenUSD robot assets into a controllable {@link ThreeUsdRobot}.
  *
+ * Assets load by URL ({@link loadAsync}) or from in-memory content
+ * ({@link parse} — USDA text, `ArrayBuffer`, typed array, or `Blob`/`File`).
  * Composition (references / payloads / sublayers, M8) is resolved through an
  * {@link AssetResolver}. Mesh rendering is M6; unit / up-axis / initial-pose
  * handling is M9; USDC and variants are M10.
@@ -60,14 +67,15 @@ export class ThreeUsdRobotLoader {
 
   /**
    * Fetch an asset by URL and build the robot. `.usdz` packages are unzipped and
-   * composed from their entries; everything else is sniffed for the crate magic
-   * and parsed as binary USDC or USDA text.
+   * composed from their entries; everything else is sniffed for the zip / crate
+   * magic and parsed as USDZ, binary USDC, or USDA text.
    */
   async loadAsync(url: string): Promise<ThreeUsdRobot> {
     const bytes = await this.fetchRootBytes(url);
+    // Extension first: sniffing only sees offset 0, the extension also covers
+    // zip archives with a prefix (fflate reads the central directory anyway).
     if (/\.usdz$/i.test(url)) return this.parseUsdz(bytes);
-    if (CrateReader.isCrate(bytes)) return this.parseCrate(bytes, url);
-    return this.parse(new TextDecoder().decode(bytes), url);
+    return this.parse(bytes, url);
   }
 
   private async fetchRootBytes(url: string): Promise<Uint8Array> {
@@ -76,44 +84,76 @@ export class ThreeUsdRobotLoader {
     return new TextEncoder().encode(await resolver.fetchText(url));
   }
 
-  /** Build a robot (composed, with meshes) from USDA source text. */
-  async parse(text: string, baseUrl = ""): Promise<ThreeUsdRobot> {
-    return this.buildFromStage(
-      await this.composeStage(text, baseUrl, this.resolver),
-      baseUrl,
-      this.resolver,
-    );
+  /**
+   * Build a robot from in-memory content — no fetch involved. Accepts USDA
+   * source text, or an `ArrayBuffer` / typed array / `Blob` (e.g. a dropped
+   * `File`) holding USDA text, a binary crate, or a `.usdz` package; binary
+   * input is sniffed for the zip / crate magic. `baseUrl` anchors relative
+   * references, payloads, and texture paths of non-package input.
+   */
+  async parse(data: UsdSource, baseUrl = ""): Promise<ThreeUsdRobot> {
+    return this.buildFromStage(await this.openSource(data, baseUrl));
   }
 
-  /** Build a robot from the bytes of a `.usdz` package. */
-  async parseUsdz(bytes: Uint8Array): Promise<ThreeUsdRobot> {
+  /** Build a robot from a `.usdz` package (bytes, `ArrayBuffer`, or `Blob`). */
+  async parseUsdz(data: BinarySource): Promise<ThreeUsdRobot> {
+    return this.buildFromStage(await this.openUsdzStage(await toBytes(data)));
+  }
+
+  /** Build a robot from a binary crate (`.usdc` / binary `.usd`). */
+  async parseCrate(data: BinarySource, baseUrl = ""): Promise<ThreeUsdRobot> {
+    const stage = await this.composeStageFromBytes(await toBytes(data), baseUrl, this.resolver);
+    return this.buildFromStage({ stage, baseUrl, resolver: this.resolver });
+  }
+
+  /**
+   * Parse + compose in-memory content (same formats as {@link parse}) into the
+   * Three.js-independent robot IR.
+   */
+  async parseRobotDescription(data: UsdSource, baseUrl = ""): Promise<RobotDescription> {
+    const { stage } = await this.openSource(data, baseUrl);
+    return extractRobotDescription(stage, this.extractOptions());
+  }
+
+  /** Sniff in-memory content (text / zip / crate) and compose it into a stage. */
+  private async openSource(data: UsdSource, baseUrl: string): Promise<OpenedStage> {
+    const resolver = this.resolver;
+    if (typeof data === "string") {
+      return { stage: await this.composeStage(data, baseUrl, resolver), baseUrl, resolver };
+    }
+    const bytes = await toBytes(data);
+    if (isZip(bytes)) return this.openUsdzStage(bytes);
+    const stage = CrateReader.isCrate(bytes)
+      ? await this.composeStageFromBytes(bytes, baseUrl, resolver)
+      : await this.composeStage(new TextDecoder().decode(bytes), baseUrl, resolver);
+    return { stage, baseUrl, resolver };
+  }
+
+  private async openUsdzStage(bytes: Uint8Array): Promise<OpenedStage> {
     const pkg = openUsdz(bytes);
     // The root layer of a usdz is typically binary USDC — sniff, don't assume text.
     const rootBytes = await pkg.resolver.fetchBytes(pkg.rootEntry);
     const stage = await this.composeStageFromBytes(rootBytes, pkg.rootEntry, pkg.resolver);
-    return this.buildFromStage(stage, pkg.rootEntry, pkg.resolver);
+    return { stage, baseUrl: pkg.rootEntry, resolver: pkg.resolver };
   }
 
-  /** Build a robot from the bytes of a binary crate (`.usdc` / binary `.usd`). */
-  async parseCrate(bytes: Uint8Array, baseUrl = ""): Promise<ThreeUsdRobot> {
-    const stage = await this.composeStageFromBytes(bytes, baseUrl, this.resolver);
-    return this.buildFromStage(stage, baseUrl, this.resolver);
-  }
-
-  /** Parse + compose USDA source into the Three.js-independent robot IR. */
-  async parseRobotDescription(text: string, baseUrl = ""): Promise<RobotDescription> {
-    const stage = await this.composeStage(text, baseUrl, this.resolver);
-    return extractRobotDescription(stage, this.extractOptions());
-  }
-
-  private buildFromStage(stage: Stage, baseUrl: string, resolver: AssetResolver): ThreeUsdRobot {
+  private buildFromStage({ stage, baseUrl, resolver }: OpenedStage): ThreeUsdRobot {
     const robot = extractRobotDescription(stage, this.extractOptions());
     const tree = buildKinematicTree(robot);
     const robot3d = new ThreeUsdRobot(robot, tree, this.robotOptions());
 
     const loadVisuals = this.options.loadVisuals ?? true;
     const loadCollisions = this.options.loadCollisions ?? false;
-    const loadScene = this.options.loadSceneGeometry ?? false;
+    // A stage with no articulation at all is a pure static scene; default to
+    // drawing its geometry — otherwise the load would be silently empty.
+    const isStaticScene =
+      Object.keys(robot.links).length === 0 && Object.keys(robot.joints).length === 0;
+    if (isStaticScene && this.options.loadSceneGeometry === undefined) {
+      this.options.onWarn?.(
+        "no articulation found (0 links / 0 joints); rendering the stage as static scene geometry",
+      );
+    }
+    const loadScene = this.options.loadSceneGeometry ?? isStaticScene;
     if (loadVisuals || loadCollisions || loadScene) {
       const textureProvider =
         (this.options.loadTextures ?? true) ? createTextureProvider(resolver, baseUrl) : undefined;
