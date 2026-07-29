@@ -10,15 +10,26 @@ import type { KinematicTree } from "../robot/buildKinematicTree.js";
 import { JointObject } from "./JointObject.js";
 import { LinkObject } from "./LinkObject.js";
 
+/** Target world up-axis: normalize to Y-up / Z-up, or keep the authored orientation. */
+export type WorldUpAxis = "Y" | "Z" | "keep";
+
 export type ThreeUsdRobotOptions = {
   /** Clamp `setJointValue` to authored limits (default `true`). */
   clampJointLimits?: boolean;
   /** Size of the built-in joint-axis / link-frame helpers (stage units, default `0.15`). */
   helperSize?: number;
   /**
-   * Up-axis correction applied at the robot root. `"auto"` rotates Z-up assets
-   * into the Three.js Y-up scene; `"Z"` forces it, `"Y"`/`"none"` leave the
-   * orientation as authored. Default `"none"` (the loader defaults to `"auto"`).
+   * Target world up-axis. The root is rotated so the stage's authored `upAxis`
+   * lands in that convention: `"Y"` for a standard three.js scene, `"Z"` for a
+   * robotics-style Z-up world, `"keep"` for no correction. Takes precedence
+   * over the deprecated {@link ThreeUsdRobotOptions.upAxisConversion}.
+   */
+  worldUp?: WorldUpAxis;
+  /**
+   * Legacy up-axis correction: `"auto"` ≡ `worldUp: "Y"`, `"Y"` / `"none"` ≡
+   * `worldUp: "keep"`, and `"Z"` forces the Z-up→Y-up rotation regardless of
+   * stage metadata. Default `"none"` (the loader defaults to `"auto"`).
+   * @deprecated Use {@link ThreeUsdRobotOptions.worldUp}.
    */
   upAxisConversion?: "auto" | "Y" | "Z" | "none";
   /** Extra uniform scale multiplied with the stage `metersPerUnit` (default `1`). */
@@ -86,14 +97,21 @@ export class ThreeUsdRobot extends THREE.Object3D {
     if (options.applyInitialPose ?? true) this.applyInitialPose(robot);
   }
 
-  /** Orient (Z-up → Y-up) and scale (metersPerUnit × unitScale) the robot root. */
+  /** Orient (authored upAxis → target world up) and scale (metersPerUnit × unitScale) the root. */
   private applyStageNormalization(robot: RobotDescription, options: ThreeUsdRobotOptions): void {
     const scale = (robot.metersPerUnit || 1) * (options.unitScale ?? 1);
     if (scale !== 1) this.scale.setScalar(scale);
 
+    const rotateX = (angle: number) =>
+      this.quaternion.setFromAxisAngle(new THREE.Vector3(1, 0, 0), angle);
+
+    if (options.worldUp) {
+      if (options.worldUp === "Y" && robot.upAxis === "Z") rotateX(-Math.PI / 2);
+      else if (options.worldUp === "Z" && robot.upAxis === "Y") rotateX(Math.PI / 2);
+      return; // matching axis or "keep": leave as authored
+    }
     const conv = options.upAxisConversion ?? "none";
-    const toY = conv === "Z" || (conv === "auto" && robot.upAxis === "Z");
-    if (toY) this.quaternion.setFromAxisAngle(new THREE.Vector3(1, 0, 0), -Math.PI / 2);
+    if (conv === "Z" || (conv === "auto" && robot.upAxis === "Z")) rotateX(-Math.PI / 2);
   }
 
   /** Apply each joint's authored initial value, if any. */
@@ -294,6 +312,16 @@ export class ThreeUsdRobot extends THREE.Object3D {
 
   getKinematicTree(): KinematicTree {
     return this.tree;
+  }
+
+  /** Authored stage up-axis (`"Y"` or `"Z"`) — unaffected by `worldUp` normalization. */
+  get upAxis(): "Y" | "Z" {
+    return this.robot.upAxis;
+  }
+
+  /** Authored stage scale in meters per unit (already applied to the root). */
+  get metersPerUnit(): number {
+    return this.robot.metersPerUnit;
   }
 
   // -- Animation playback --------------------------------------------------

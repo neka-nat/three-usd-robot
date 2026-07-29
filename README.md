@@ -97,6 +97,25 @@ and `parseRobotDescription(data)` returns the Three.js-independent IR. Pass a
 `baseUrl` as the second `parse` argument if the layer has relative references
 or texture paths to resolve.
 
+### World up-axis & units
+
+Stages load normalized: `metersPerUnit` scales the root, and the authored
+`upAxis` (`"Y"` or `"Z"`) is rotated into your world convention via `worldUp`:
+
+```ts
+new ThreeUsdRobotLoader(); // default: "Y" — upright in a stock three.js scene
+new ThreeUsdRobotLoader({ worldUp: "Z" }); // robotics-style Z-up world
+new ThreeUsdRobotLoader({ worldUp: "keep" }); // leave the authored orientation
+
+robot.upAxis; // authored stage value ("Y" | "Z"), independent of normalization
+robot.metersPerUnit; // authored stage scale (already applied to the root)
+```
+
+Isaac Sim assets are Z-up, so the default makes them stand upright in a plain
+three.js scene; a Z-up app (ROS-style) passes `worldUp: "Z"` once instead of
+counter-rotating per asset. The M9 option `upAxisConversion` remains as a
+deprecated alias (`"auto"` ≡ `worldUp: "Y"`, `"none"` ≡ `"keep"`).
+
 ### Stable addressing (naming contract)
 
 Joints and links are keyed by their prim's **leaf name** while it is unique

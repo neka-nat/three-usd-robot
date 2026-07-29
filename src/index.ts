@@ -37,7 +37,11 @@ export {
   type TextureOptions,
   type TextureProvider,
 } from "./three/TextureBinding.js";
-export { ThreeUsdRobot, type ThreeUsdRobotOptions } from "./three/ThreeUsdRobot.js";
+export {
+  ThreeUsdRobot,
+  type ThreeUsdRobotOptions,
+  type WorldUpAxis,
+} from "./three/ThreeUsdRobot.js";
 export {
   ThreeUsdRobotLoader,
   type ThreeUsdRobotLoaderOptions,

@@ -10,7 +10,7 @@ import { crateToUsdaFile } from "../usd/crate/toUsdaFile.js";
 import { isZip, openUsdz } from "../usd/usdz.js";
 import { bindRobotMeshes, bindSceneMeshes } from "./MeshBinding.js";
 import { createTextureProvider } from "./TextureBinding.js";
-import { ThreeUsdRobot, type ThreeUsdRobotOptions } from "./ThreeUsdRobot.js";
+import { ThreeUsdRobot, type ThreeUsdRobotOptions, type WorldUpAxis } from "./ThreeUsdRobot.js";
 
 export type ThreeUsdRobotLoaderOptions = {
   /** Resolver for references / payloads / sublayers (default {@link DefaultAssetResolver}). */
@@ -28,7 +28,17 @@ export type ThreeUsdRobotLoaderOptions = {
   loadSceneGeometry?: boolean;
   /** Load diffuse textures referenced by materials (default `true`). */
   loadTextures?: boolean;
-  /** Up-axis correction strategy (M9). */
+  /**
+   * Target world up-axis. Any stage (Y-up or Z-up) is normalized into this
+   * convention: `"Y"` for a standard three.js scene (the default behavior),
+   * `"Z"` for a robotics-style Z-up world, `"keep"` to leave the authored
+   * orientation. Takes precedence over {@link upAxisConversion}.
+   */
+  worldUp?: WorldUpAxis;
+  /**
+   * Legacy up-axis correction (M9). Default `"auto"` ≡ `worldUp: "Y"`.
+   * @deprecated Use {@link worldUp}.
+   */
   upAxisConversion?: "auto" | "Y" | "Z" | "none";
   /** Extra uniform scale multiplied with `metersPerUnit` (M9). */
   unitScale?: number;
@@ -202,7 +212,9 @@ export class ThreeUsdRobotLoader {
 
   private robotOptions(): ThreeUsdRobotOptions {
     return {
-      upAxisConversion: this.options.upAxisConversion ?? "auto",
+      ...(this.options.worldUp
+        ? { worldUp: this.options.worldUp }
+        : { upAxisConversion: this.options.upAxisConversion ?? "auto" }),
       ...(this.options.clampJointLimits !== undefined
         ? { clampJointLimits: this.options.clampJointLimits }
         : {}),
