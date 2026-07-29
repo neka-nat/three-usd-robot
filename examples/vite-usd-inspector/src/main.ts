@@ -9,6 +9,8 @@ import {
   writeUsdz,
 } from "three-usd-robot";
 import { createJointSliderPanel } from "three-usd-robot/extras";
+import { type GizmoMode, createSelectionGizmo } from "./selectionGizmo.js";
+import { type UsdTreePanel, createUsdTreePanel } from "./usdTreePanel.js";
 
 /** NVIDIA's public Isaac Sim asset CDN — no login, and CORS is open. */
 const ISAAC = "https://omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/5.1";
@@ -110,6 +112,85 @@ gui
     void load(url);
   });
 
+const clock = new THREE.Clock();
+let robot: ThreeUsdRobot | null = null;
+let tick: (() => void) | undefined;
+let jointFolder: GUI | undefined;
+let playbackFolder: GUI | undefined;
+let treePanel: UsdTreePanel | undefined;
+
+// ---------------------------------------------------------------------------
+// USD structure sidebar + selection gizmo
+// ---------------------------------------------------------------------------
+
+const treeEl = document.getElementById("tree") as HTMLElement;
+const inspectorEl = document.getElementById("inspector") as HTMLElement;
+
+const selection = createSelectionGizmo({
+  scene,
+  camera,
+  domElement: renderer.domElement,
+  orbit: controls,
+  getRoot: () => robot,
+  onPick: (unit, hit) => {
+    // Reveal the exact mesh prim when one was hit, else the unit's link prim.
+    const path =
+      (hit?.userData.primPath as string | undefined) ??
+      (unit as { primPath?: string } | null)?.primPath ??
+      null;
+    treePanel?.select(path);
+  },
+});
+
+/** The direct child of the robot root containing `obj` — the movable unit. */
+function unitOf(obj: THREE.Object3D): THREE.Object3D | null {
+  let cur = obj;
+  while (cur.parent && cur.parent !== robot) cur = cur.parent;
+  return cur.parent === robot ? cur : null;
+}
+
+/** Tree selection → movable unit: exact link or mesh prims only. */
+function objectForPrim(path: string): THREE.Object3D | null {
+  if (!robot) return null;
+  const link = robot.getLinkObjectsByPath().get(path);
+  if (link) return unitOf(link);
+  let mesh: THREE.Object3D | null = null;
+  robot.traverse((o) => {
+    if (!mesh && o.userData.primPath === path) mesh = o;
+  });
+  return mesh ? unitOf(mesh) : null;
+}
+
+function deselect() {
+  selection.select(null);
+  treePanel?.select(null);
+}
+
+const gizmoState = { mode: "translate" as GizmoMode, space: "world" as "world" | "local" };
+const gizmoFolder = gui.addFolder("Gizmo");
+const modeCtrl = gizmoFolder
+  .add(gizmoState, "mode", ["translate", "rotate", "scale"])
+  .onChange((mode: GizmoMode) => selection.setMode(mode));
+gizmoFolder
+  .add(gizmoState, "space", ["world", "local"])
+  .onChange((space: "world" | "local") => selection.setSpace(space));
+gizmoFolder.add({ deselect }, "deselect").name("deselect (Esc)");
+
+window.addEventListener("keydown", (event) => {
+  const target = event.target as HTMLElement | null;
+  if (target && (/^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName) || target.isContentEditable)) {
+    return;
+  }
+  const mode = ({ t: "translate", r: "rotate", s: "scale" } as const)[event.key];
+  if (mode) {
+    gizmoState.mode = mode;
+    selection.setMode(mode);
+    modeCtrl.updateDisplay();
+  } else if (event.key === "Escape") {
+    deselect();
+  }
+});
+
 /** Re-export whatever is loaded, straight from the browser. */
 const exports = {
   usda: () => {
@@ -131,15 +212,12 @@ exportFolder.close();
 // Load / reload
 // ---------------------------------------------------------------------------
 
-const clock = new THREE.Clock();
-let robot: ThreeUsdRobot | null = null;
-let tick: (() => void) | undefined;
-let jointFolder: GUI | undefined;
-let playbackFolder: GUI | undefined;
-
 async function load(url: string) {
   setStatus("loading…");
   tick = undefined;
+  selection.select(null);
+  treePanel?.dispose();
+  treePanel = undefined;
   jointFolder?.destroy();
   playbackFolder?.destroy();
   jointFolder = undefined;
@@ -157,6 +235,12 @@ async function load(url: string) {
     scene.add(next);
     next.showJointAxes = true;
     frame(next);
+
+    if (next.stage) {
+      treePanel = createUsdTreePanel(treeEl, inspectorEl, next.stage, {
+        onSelect: (prim) => selection.select(objectForPrim(prim.GetPath())),
+      });
+    }
 
     jointFolder = gui.addFolder("Joints");
     const panel = createJointSliderPanel(next, jointFolder);
@@ -200,6 +284,7 @@ window.addEventListener("resize", () => {
 renderer.setAnimationLoop(() => {
   tick?.();
   controls.update();
+  selection.update();
   renderer.render(scene, camera);
 });
 

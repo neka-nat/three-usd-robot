@@ -71,6 +71,14 @@ describe("ThreeUsdRobotLoader.parse — in-memory sources", () => {
     expect(robot.getJointNames().length).toBeGreaterThan(0);
   });
 
+  it("attaches the composed stage for inspection", async () => {
+    const robot = await new ThreeUsdRobotLoader().parse(ARM);
+    expect(robot.stage).toBeDefined();
+    const linkPath = robot.getLinks()[0]?.primPath;
+    expect(linkPath).toBeDefined();
+    expect(robot.stage?.GetPrimAtPath(linkPath!)?.GetPath()).toBe(linkPath);
+  });
+
   it("sniffs a usdz package from an ArrayBuffer and from a Blob", async () => {
     const usdz = armUsdz();
     for (const data of [toArrayBuffer(usdz), new Blob([toArrayBuffer(usdz)])]) {

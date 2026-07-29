@@ -2,7 +2,7 @@
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "buildCommand": "npm run demo:build",
   "installCommand": "npm install && npm run demo:install",
-  "outputDirectory": "examples/vite-joint-slider/dist",
+  "outputDirectory": "examples/vite-usd-inspector/dist",
   "framework": null,
   "headers": [
     {

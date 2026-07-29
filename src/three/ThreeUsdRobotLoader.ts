@@ -151,6 +151,7 @@ export class ThreeUsdRobotLoader {
     const robot = extractRobotDescription(stage, this.extractOptions());
     const tree = buildKinematicTree(robot);
     const robot3d = new ThreeUsdRobot(robot, tree, this.robotOptions());
+    robot3d.stage = stage;
 
     const loadVisuals = this.options.loadVisuals ?? true;
     const loadCollisions = this.options.loadCollisions ?? false;

@@ -5,14 +5,18 @@ to the library source (see its `vite.config.ts`), so it always reflects local
 changes — no build step needed.
 
 ```sh
-cd examples/vite-joint-slider   # or vite-basic-viewer
+cd examples/vite-usd-inspector   # or vite-basic-viewer
 npm install
 npm run dev
 ```
 
-- **vite-joint-slider** — loads the sample 3-link arm (`public/robot.usda`),
-  exposes a `lil-gui` slider per joint (via `three-usd-robot/extras`), and shows
-  joint-axis helpers. Load any other asset with `?asset=<url>` (`.usda`/`.usdc`/
+- **vite-usd-inspector** — loads the sample 3-link arm (`public/robot.usda`),
+  shows the composed **USD prim tree** with an attribute inspector (click a prim
+  to select it, click an object to reveal its prim), lets you move whole objects
+  with a **transform gizmo** (translate / rotate / scale — the robot moves as
+  one rigid unit), exposes a `lil-gui` slider per joint (via
+  `three-usd-robot/extras`), and shows joint-axis helpers. Load any other asset
+  with `?asset=<url>` (`.usda`/`.usdc`/
   binary `.usd`/`.usdz` are auto-detected) — e.g. `?asset=/arm_anim.usda` shows
   the **animation playback** controls (a play toggle + time slider),
   `?asset=/textured_quad.usda` for a **textured** material (`UsdUVTexture`), or

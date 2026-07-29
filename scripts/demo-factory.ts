@@ -51,7 +51,7 @@ const OUT_DIR = new URL("../out/", import.meta.url).pathname;
 /** Both example viewers offer the cell as a preset, so ship it to each. */
 const EXAMPLE_PUBLIC_DIRS = [
   new URL("../examples/vite-basic-viewer/public/", import.meta.url).pathname,
-  new URL("../examples/vite-joint-slider/public/", import.meta.url).pathname,
+  new URL("../examples/vite-usd-inspector/public/", import.meta.url).pathname,
 ];
 
 // ---------------------------------------------------------------------------

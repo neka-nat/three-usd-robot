@@ -1,4 +1,4 @@
-/** Generate a checker PNG into the joint-slider example for the texture demo. */
+/** Generate a checker PNG into the usd-inspector example for the texture demo. */
 import { mkdirSync, writeFileSync } from "node:fs";
 import { zlibSync } from "fflate";
 
@@ -61,6 +61,6 @@ for (const c of png) {
   o += c.length;
 }
 
-mkdirSync("examples/vite-joint-slider/public/textures", { recursive: true });
-writeFileSync("examples/vite-joint-slider/public/textures/checker.png", out);
+mkdirSync("examples/vite-usd-inspector/public/textures", { recursive: true });
+writeFileSync("examples/vite-usd-inspector/public/textures/checker.png", out);
 console.log(`wrote checker.png (${out.length} bytes)`);

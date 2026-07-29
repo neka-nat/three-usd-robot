@@ -7,6 +7,7 @@ import type {
   RobotDescription,
 } from "../robot/RobotDescription.js";
 import type { KinematicTree } from "../robot/buildKinematicTree.js";
+import type { Stage } from "../usd/Stage.js";
 import { JointObject } from "./JointObject.js";
 import { LinkObject } from "./LinkObject.js";
 
@@ -58,6 +59,12 @@ export class ThreeUsdRobot extends THREE.Object3D {
   readonly robot: RobotDescription;
   readonly tree: KinematicTree;
   readonly clampJointLimits: boolean;
+  /**
+   * The composed USD stage this robot was built from — the full prim tree, for
+   * inspection tooling (structure panels, attribute browsers). Attached by
+   * {@link ThreeUsdRobotLoader}; `undefined` for programmatically-built robots.
+   */
+  stage?: Stage;
 
   private readonly linkObjects = new Map<string, LinkObject>();
   private readonly jointObjects = new Map<string, JointObject>();

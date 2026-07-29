@@ -1,0 +1,190 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>three-usd-robot — USD inspector</title>
+    <style>
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+        overflow: hidden;
+        background: #202024;
+        font-family: system-ui, sans-serif;
+      }
+      #hint {
+        position: fixed;
+        left: 332px;
+        bottom: 12px;
+        color: #aaa;
+        font-size: 12px;
+      }
+      #status {
+        position: fixed;
+        left: 332px;
+        top: 12px;
+        padding: 6px 10px;
+        border-radius: 6px;
+        background: rgba(24, 24, 28, 0.85);
+        color: #e6e6e6;
+        font-size: 12px;
+      }
+
+      /* -- USD structure sidebar ------------------------------------------ */
+      #sidebar {
+        position: fixed;
+        left: 0;
+        top: 0;
+        bottom: 0;
+        width: 320px;
+        display: flex;
+        flex-direction: column;
+        background: rgba(24, 24, 28, 0.92);
+        border-right: 1px solid #34343c;
+        color: #e6e6e6;
+        font-size: 12px;
+        user-select: none;
+      }
+      #sidebar header {
+        padding: 8px 10px;
+        font-size: 11px;
+        font-weight: 600;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+        color: #9aa0ae;
+        border-bottom: 1px solid #34343c;
+        flex: none;
+      }
+      #tree {
+        flex: 1 1 55%;
+        overflow: auto;
+        padding: 4px;
+      }
+      #tree .empty {
+        color: #777;
+        padding: 8px;
+      }
+      .tree-row {
+        display: flex;
+        align-items: center;
+        gap: 5px;
+        padding: 1px 4px;
+        border-radius: 4px;
+        cursor: pointer;
+        white-space: nowrap;
+      }
+      .tree-row:hover {
+        background: #2c2c34;
+      }
+      .tree-row.selected {
+        background: rgba(79, 124, 255, 0.22);
+        outline: 1px solid rgba(79, 124, 255, 0.45);
+      }
+      .tree-toggle {
+        flex: none;
+        width: 12px;
+        text-align: center;
+        color: #8a8f9c;
+        font-size: 9px;
+        transition: transform 0.1s;
+      }
+      .tree-toggle.open {
+        transform: rotate(90deg);
+      }
+      .tree-name {
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .tree-type {
+        flex: none;
+        font-size: 10px;
+        color: #7f8ea3;
+      }
+      .type-joint { color: #f08bb4; }
+      .type-gprim { color: #8fd0a0; }
+      .type-xform { color: #86aede; }
+      .type-material { color: #d6b26f; }
+      .type-physics { color: #c79ae0; }
+      .type-camera { color: #6fc6d6; }
+
+      /* -- attribute inspector -------------------------------------------- */
+      #inspector {
+        flex: 0 1 45%;
+        overflow: auto;
+        border-top: 1px solid #34343c;
+        padding: 8px 10px;
+        user-select: text;
+      }
+      #inspector .empty {
+        color: #777;
+      }
+      #inspector .prim-name {
+        font-size: 13px;
+        font-weight: 600;
+      }
+      #inspector .prim-path {
+        font-family: ui-monospace, monospace;
+        font-size: 10px;
+        color: #9aa0ae;
+        word-break: break-all;
+        margin: 2px 0 6px;
+      }
+      #inspector .chip {
+        display: inline-block;
+        font-size: 10px;
+        padding: 1px 6px;
+        margin: 0 4px 6px 0;
+        border-radius: 8px;
+        background: #33333c;
+        color: #b9c2d4;
+      }
+      #inspector h4 {
+        margin: 8px 0 3px;
+        font-size: 10px;
+        font-weight: 600;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+        color: #9aa0ae;
+      }
+      #inspector table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 11px;
+      }
+      #inspector td {
+        padding: 1px 4px 1px 0;
+        vertical-align: top;
+      }
+      #inspector td.attr-name {
+        color: #cdd3de;
+        white-space: nowrap;
+        max-width: 130px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      #inspector td.attr-type {
+        color: #7f8ea3;
+        white-space: nowrap;
+      }
+      #inspector td.attr-value {
+        font-family: ui-monospace, monospace;
+        color: #a8d0a8;
+        word-break: break-all;
+      }
+    </style>
+  </head>
+  <body>
+    <aside id="sidebar">
+      <header>USD structure</header>
+      <div id="tree"><div class="empty">loading…</div></div>
+      <div id="inspector"><div class="empty">select a prim to inspect it</div></div>
+    </aside>
+    <div id="status">loading…</div>
+    <div id="hint">
+      drag to orbit · click an object for a gizmo (t/r/s to switch, Esc to deselect) · robots stream
+      from NVIDIA's Isaac Sim asset CDN
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

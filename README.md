@@ -303,9 +303,10 @@ and `.usdz` packages to ASCII USDA.
 
 [`examples/`](./examples) holds runnable Vite demos:
 
-- **`vite-joint-slider`** — the [live demo](https://three-usd-robot.vercel.app):
-  vanilla Three.js + `lil-gui`, with a robot picker, joint sliders, animation
-  playback and USD export.
+- **`vite-usd-inspector`** — the [live demo](https://three-usd-robot.vercel.app):
+  vanilla Three.js + `lil-gui`, with a robot picker, a USD structure panel
+  (prim tree + attribute inspector), a transform gizmo, joint sliders,
+  animation playback and USD export.
 - **`vite-basic-viewer`** — the same thing through React Three Fiber.
 
 Both take `?asset=<url>` for any asset, or `?isaac=<path under Isaac/>` to pull

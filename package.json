@@ -58,8 +58,8 @@
     "format": "biome format --write .",
     "check": "biome check --write .",
     "demo:factory": "tsx scripts/demo-factory.ts",
-    "demo:install": "npm install --prefix examples/vite-joint-slider",
-    "demo:build": "npm run demo:factory && npm run build --prefix examples/vite-joint-slider"
+    "demo:install": "npm install --prefix examples/vite-usd-inspector",
+    "demo:build": "npm run demo:factory && npm run build --prefix examples/vite-usd-inspector"
   },
   "peerDependencies": {
     "@react-three/fiber": ">=8",
