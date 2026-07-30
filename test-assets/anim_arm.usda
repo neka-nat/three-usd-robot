@@ -1,0 +1,77 @@
+#usda 1.0
+(
+    customLayerData = {
+        string generator = "make-crate-fixtures"
+        int revision = 3
+        double scale = 0.5
+    }
+    defaultPrim = "World"
+    endTimeCode = 96
+    metersPerUnit = 1
+    startTimeCode = 0
+    timeCodesPerSecond = 24
+    upAxis = "Z"
+)
+
+def Xform "World" (
+    prepend apiSchemas = ["PhysicsArticulationRootAPI"]
+)
+{
+    def Xform "base" (
+        prepend apiSchemas = ["PhysicsRigidBodyAPI"]
+    )
+    {
+        custom double test:dbl
+        double test:dbl.timeSamples = {
+            0: 0.1,
+            96: 0.2,
+        }
+        custom float[] test:intFloats = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19]
+        custom float[] test:lutFloats = [0.5, 1.5, 0.5, 1.5, 0.5, 1.5, 0.5, 1.5, 0.5, 1.5, 0.5, 1.5, 0.5, 1.5, 0.5, 1.5, 0.5, 1.5, 0.5, 1.5]
+        custom uchar[] test:uchars = [0, 1, 127, 255]
+
+        def Cube "geom"
+        {
+            double size = 0.2
+        }
+    }
+
+    def Xform "arm" (
+        prepend apiSchemas = ["PhysicsRigidBodyAPI"]
+    )
+    {
+        double3 xformOp:translate = (1, 2, 3)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+
+        def Cube "geom"
+        {
+            double size = 0.2
+        }
+    }
+
+    def PhysicsRevoluteJoint "j1" (
+        prepend apiSchemas = ["PhysicsDriveAPI:angular"]
+    )
+    {
+        float drive:angular:physics:targetPosition.timeSamples = {
+            0: 0,
+            48: 90.5,
+            96: -30.25,
+        }
+        uniform token physics:axis = "Z"
+        rel physics:body0 = </World/base>
+        rel physics:body1 = </World/arm>
+        float physics:lowerLimit = -180
+        float physics:upperLimit = 180
+    }
+
+    def Xform "panel"
+    {
+        matrix4d xformOp:transform.timeSamples = {
+            0: ( (1, 0, 0, 0), (0, 1, 0, 0), (0, 0, 1, 0), (0, 0, 0, 1) ),
+            96: ( (1, 0, 0, 0), (0, 1, 0, 0), (0, 0, 1, 0), (0.5, 0, 0.25, 1) ),
+        }
+        uniform token[] xformOpOrder = ["xformOp:transform"]
+    }
+}
+

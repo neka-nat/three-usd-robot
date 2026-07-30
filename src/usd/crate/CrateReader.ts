@@ -28,6 +28,16 @@ const scratch = new DataView(new ArrayBuffer(8));
 /** Sentinel separating entries in the FIELDSETS array (max uint32 → -1 signed). */
 const FIELDSET_END = -1;
 
+/** pxr writes arrays below this element count raw, even with the compressed bit. */
+const MIN_COMPRESSED_ARRAY_SIZE = 16;
+
+/** Sign-extended int8 components from an inlined vec/matrix payload's low bytes. */
+function inlineInt8s(low: number, n: number): number[] {
+  const out = new Array<number>(n);
+  for (let i = 0; i < n; i++) out[i] = (((low >>> (i * 8)) & 0xff) << 24) >> 24;
+  return out;
+}
+
 export type CrateSection = {
   name: string;
   start: number;
@@ -335,6 +345,36 @@ export class CrateReader {
     return this.readScalar(b.type, Number(b.payload));
   }
 
+  /**
+   * Decode a `timeSamples` field (a {@link CrateType.TimeSamples} rep) into
+   * parallel times/values arrays; `undefined` if `rep` is some other type.
+   *
+   * Layout (pxr `crateFile.cpp`, `Write(TimeSamples)`): an `int64` offset —
+   * relative to its own position — jumps over the recursively-written times
+   * data to the times `ValueRep` (a `DoubleVector`); a second such offset
+   * jumps over the samples' data to `[u64 count][count × ValueRep]`. Sample
+   * reps decode through {@link getValue}, so every scalar/array type works.
+   */
+  getTimeSamples(rep: bigint): { times: number[]; values: (UsdValue | undefined)[] } | undefined {
+    const b = decodeRepBits(rep);
+    if (b.type !== CrateType.TimeSamples || b.isArray || b.isInlined) return undefined;
+    const off = Number(b.payload);
+
+    let p = off + Number(this.i64(off));
+    const times = this.getValue(this.view.getBigUint64(p, true));
+    p += 8;
+    if (!Array.isArray(times) || !times.every((t) => typeof t === "number")) return undefined;
+
+    p += Number(this.i64(p));
+    const count = this.u64(p);
+    p += 8;
+    const values = new Array<UsdValue | undefined>(count);
+    for (let i = 0; i < count; i++) {
+      values[i] = this.getValue(this.view.getBigUint64(p + i * 8, true));
+    }
+    return { times: times as number[], values };
+  }
+
   private readInlined(type: number, payload: bigint): UsdValue | undefined {
     const low = Number(payload & 0xffffffffn);
     switch (type) {
@@ -365,6 +405,46 @@ export class CrateReader {
       case CrateType.Permission:
       case CrateType.Variability:
         return low;
+      // Vectors whose components are all small integers are inlined as one
+      // int8 per component in the payload's low bytes (crateValueInliners.h).
+      case CrateType.Vec2i:
+      case CrateType.Vec2h:
+      case CrateType.Vec2f:
+      case CrateType.Vec2d:
+        return inlineInt8s(low, 2);
+      case CrateType.Vec3i:
+      case CrateType.Vec3h:
+      case CrateType.Vec3f:
+      case CrateType.Vec3d:
+        return inlineInt8s(low, 3) as Vec3;
+      case CrateType.Vec4i:
+      case CrateType.Vec4h:
+      case CrateType.Vec4f:
+      case CrateType.Vec4d:
+        return inlineInt8s(low, 4);
+      // Matrices inline when off-diagonal is zero and the diagonal fits int8.
+      case CrateType.Matrix3d: {
+        const [a, b, c] = inlineInt8s(low, 3);
+        // biome-ignore format: keep matrix layout readable
+        return new UsdMatrix([
+          a!, 0, 0,
+          0, b!, 0,
+          0, 0, c!,
+        ], 3);
+      }
+      case CrateType.Matrix4d: {
+        const [a, b, c, d] = inlineInt8s(low, 4);
+        // biome-ignore format: keep matrix layout readable
+        return new UsdMatrix([
+          a!, 0, 0, 0,
+          0, b!, 0, 0,
+          0, 0, c!, 0,
+          0, 0, 0, d!,
+        ], 4);
+      }
+      // Only the empty dictionary is inlined.
+      case CrateType.Dictionary:
+        return {};
       default:
         return undefined;
     }
@@ -383,6 +463,12 @@ export class CrateReader {
         return v.getInt32(off, true);
       case CrateType.UInt:
         return v.getUint32(off, true);
+      case CrateType.UChar:
+        return v.getUint8(off);
+      case CrateType.Int64:
+        return Number(v.getBigInt64(off, true));
+      case CrateType.UInt64:
+        return Number(v.getBigUint64(off, true));
       case CrateType.Token:
         return this.getToken(v.getUint32(off, true));
       case CrateType.String:
@@ -401,6 +487,18 @@ export class CrateReader {
         return this.readFloat64s(off, 3);
       case CrateType.Vec4d:
         return this.readFloat64s(off, 4);
+      case CrateType.Vec2h:
+        return this.readHalfs(off, 2);
+      case CrateType.Vec3h:
+        return this.readHalfs(off, 3);
+      case CrateType.Vec4h:
+        return this.readHalfs(off, 4);
+      case CrateType.Vec2i:
+        return this.readInt32s(off, 2);
+      case CrateType.Vec3i:
+        return this.readInt32s(off, 3);
+      case CrateType.Vec4i:
+        return this.readInt32s(off, 4);
       case CrateType.Quatf: {
         const q = this.readFloat32s(off, 4);
         return new Quat(q[3]!, [q[0]!, q[1]!, q[2]!]);
@@ -430,45 +528,189 @@ export class CrateReader {
         return this.readIndexVector(off, "string").items;
       case CrateType.VariantSelectionMap:
         return this.readVariantSelectionMap(off);
+      case CrateType.DoubleVector: {
+        // `std::vector<double>`: `[u64 count][count × f64]` (e.g. shared
+        // timeSamples times).
+        const count = this.u64(off);
+        return this.readFloat64s(off + 8, count);
+      }
+      case CrateType.Dictionary:
+        return this.readDictionary(off, 0);
       default:
         return undefined;
     }
   }
 
+  /** Array headers store a u32 count before crate 0.7.0, a u64 from 0.7.0 on. */
+  private arrayHeader(off: number): { count: number; next: number } {
+    if (this.version[0] === 0 && this.version[1] < 7) {
+      return { count: this.view.getUint32(off, true), next: off + 4 };
+    }
+    return { count: this.u64(off), next: off + 8 };
+  }
+
   private readArray(type: number, off: number, compressed: boolean): UsdValue | undefined {
     if (off === 0) return []; // inlined empty array
-    const count = this.u64(off);
-    let p = off + 8;
-
-    if (compressed) {
-      const compressedSize = this.u64(p);
-      p += 8;
-      return decodeIntegers32(this.bytes.subarray(p, p + compressedSize), count);
-    }
+    const { count, next: p } = this.arrayHeader(off);
+    if (count === 0) return [];
+    if (compressed) return this.readCompressedArray(type, p, count);
 
     const v = this.view;
     switch (type) {
+      case CrateType.Bool: {
+        const out = new Array<boolean>(count);
+        for (let i = 0; i < count; i++) out[i] = this.bytes[p + i] !== 0;
+        return out;
+      }
+      case CrateType.UChar: {
+        const out = new Array<number>(count);
+        for (let i = 0; i < count; i++) out[i] = this.bytes[p + i]!;
+        return out;
+      }
       case CrateType.Int:
       case CrateType.UInt: {
         const out = new Array<number>(count);
         for (let i = 0; i < count; i++) out[i] = v.getInt32(p + i * 4, true);
         return out;
       }
-      case CrateType.Float: {
+      case CrateType.Int64: {
         const out = new Array<number>(count);
-        for (let i = 0; i < count; i++) out[i] = v.getFloat32(p + i * 4, true);
+        for (let i = 0; i < count; i++) out[i] = Number(v.getBigInt64(p + i * 8, true));
         return out;
       }
+      case CrateType.UInt64: {
+        const out = new Array<number>(count);
+        for (let i = 0; i < count; i++) out[i] = Number(v.getBigUint64(p + i * 8, true));
+        return out;
+      }
+      case CrateType.Half:
+        return this.readHalfs(p, count);
+      case CrateType.Float:
+        return this.readFloat32s(p, count);
+      case CrateType.Double:
+        return this.readFloat64s(p, count);
       case CrateType.Token: {
         const out = new Array<string>(count);
         for (let i = 0; i < count; i++) out[i] = this.getToken(v.getUint32(p + i * 4, true));
         return out;
       }
+      case CrateType.String: {
+        const out = new Array<string>(count);
+        for (let i = 0; i < count; i++) {
+          out[i] = this.getToken(this.getStrings()[v.getUint32(p + i * 4, true)] ?? 0);
+        }
+        return out;
+      }
+      case CrateType.AssetPath: {
+        const out = new Array<AssetPath>(count);
+        for (let i = 0; i < count; i++) {
+          out[i] = new AssetPath(
+            this.getToken(this.getStrings()[v.getUint32(p + i * 4, true)] ?? 0),
+          );
+        }
+        return out;
+      }
+      case CrateType.Vec2f:
+        return this.readTupleArray(p, count, 2, "f32");
       case CrateType.Vec3f:
-        return this.readVec3fArray(p, count, false);
+        return this.readTupleArray(p, count, 3, "f32");
+      case CrateType.Vec4f:
+        return this.readTupleArray(p, count, 4, "f32");
+      case CrateType.Vec2d:
+        return this.readTupleArray(p, count, 2, "f64");
       case CrateType.Vec3d:
-        return this.readVec3fArray(p, count, true);
+        return this.readTupleArray(p, count, 3, "f64");
+      case CrateType.Vec4d:
+        return this.readTupleArray(p, count, 4, "f64");
+      case CrateType.Vec2h:
+        return this.readTupleArray(p, count, 2, "f16");
+      case CrateType.Vec3h:
+        return this.readTupleArray(p, count, 3, "f16");
+      case CrateType.Vec4h:
+        return this.readTupleArray(p, count, 4, "f16");
+      case CrateType.Vec2i:
+        return this.readTupleArray(p, count, 2, "i32");
+      case CrateType.Vec3i:
+        return this.readTupleArray(p, count, 3, "i32");
+      case CrateType.Vec4i:
+        return this.readTupleArray(p, count, 4, "i32");
+      case CrateType.Quatf: {
+        const out = new Array<Quat>(count);
+        for (let i = 0; i < count; i++) {
+          const q = this.readFloat32s(p + i * 16, 4);
+          out[i] = new Quat(q[3]!, [q[0]!, q[1]!, q[2]!]);
+        }
+        return out;
+      }
+      case CrateType.Quatd: {
+        const out = new Array<Quat>(count);
+        for (let i = 0; i < count; i++) {
+          const q = this.readFloat64s(p + i * 32, 4);
+          out[i] = new Quat(q[3]!, [q[0]!, q[1]!, q[2]!]);
+        }
+        return out;
+      }
+      case CrateType.Matrix3d: {
+        const out = new Array<UsdMatrix>(count);
+        for (let i = 0; i < count; i++) out[i] = new UsdMatrix(this.readFloat64s(p + i * 72, 9), 3);
+        return out;
+      }
+      case CrateType.Matrix4d: {
+        const out = new Array<UsdMatrix>(count);
+        for (let i = 0; i < count; i++)
+          out[i] = new UsdMatrix(this.readFloat64s(p + i * 128, 16), 4);
+        return out;
+      }
       default:
+        return undefined;
+    }
+  }
+
+  /**
+   * Decode an array whose rep has the compressed bit. Int arrays are
+   * integer-compressed; half/float/double arrays (crate 0.6.0+) carry a code
+   * byte — `'i'` when every value is integral, `'t'` for a lookup table +
+   * compressed indexes. Arrays under {@link MIN_COMPRESSED_ARRAY_SIZE} elements
+   * are stored raw even when the bit is set (mirrors pxr's writer).
+   */
+  private readCompressedArray(type: number, start: number, count: number): UsdValue | undefined {
+    let p = start;
+    switch (type) {
+      case CrateType.Int:
+      case CrateType.UInt: {
+        if (count < MIN_COMPRESSED_ARRAY_SIZE) {
+          const out = new Array<number>(count);
+          for (let i = 0; i < count; i++) out[i] = this.view.getInt32(p + i * 4, true);
+          return out;
+        }
+        return this.readCompressedInts(p, count).values;
+      }
+      case CrateType.Half:
+      case CrateType.Float:
+      case CrateType.Double: {
+        const readRaw = (off: number, n: number): number[] =>
+          type === CrateType.Double
+            ? this.readFloat64s(off, n)
+            : type === CrateType.Float
+              ? this.readFloat32s(off, n)
+              : this.readHalfs(off, n);
+        if (count < MIN_COMPRESSED_ARRAY_SIZE) return readRaw(p, count);
+        const code = this.bytes[p]!;
+        p += 1;
+        if (code === 0x69 /* 'i': every value is an integer */) {
+          return this.readCompressedInts(p, count).values;
+        }
+        if (code === 0x74 /* 't': lookup table + indexes */) {
+          const lutSize = this.view.getUint32(p, true);
+          p += 4;
+          const lut = readRaw(p, lutSize);
+          p += lutSize * (type === CrateType.Double ? 8 : type === CrateType.Float ? 4 : 2);
+          return this.readCompressedInts(p, count).values.map((i) => lut[i] ?? 0);
+        }
+        return undefined; // corrupt stream
+      }
+      default:
+        // 64-bit integer compression is not implemented (unseen in practice).
         return undefined;
     }
   }
@@ -485,22 +727,63 @@ export class CrateReader {
     return out;
   }
 
-  private readVec3fArray(off: number, count: number, double: boolean): Vec3[] {
-    const out = new Array<Vec3>(count);
-    const stride = double ? 24 : 12;
+  private readHalfs(off: number, n: number): number[] {
+    const out = new Array<number>(n);
+    for (let i = 0; i < n; i++) out[i] = halfToFloat(this.view.getUint16(off + i * 2, true));
+    return out;
+  }
+
+  private readInt32s(off: number, n: number): number[] {
+    const out = new Array<number>(n);
+    for (let i = 0; i < n; i++) out[i] = this.view.getInt32(off + i * 4, true);
+    return out;
+  }
+
+  /** Read `count` fixed-size `n`-tuples (vec2/3/4 of the given element kind). */
+  private readTupleArray(
+    off: number,
+    count: number,
+    n: number,
+    kind: "f32" | "f64" | "f16" | "i32",
+  ): number[][] {
+    const elemSize = kind === "f64" ? 8 : kind === "f16" ? 2 : 4;
+    const out = new Array<number[]>(count);
     for (let i = 0; i < count; i++) {
-      const o = off + i * stride;
-      out[i] = double
-        ? [
-            this.view.getFloat64(o, true),
-            this.view.getFloat64(o + 8, true),
-            this.view.getFloat64(o + 16, true),
-          ]
-        : [
-            this.view.getFloat32(o, true),
-            this.view.getFloat32(o + 4, true),
-            this.view.getFloat32(o + 8, true),
-          ];
+      const o = off + i * n * elemSize;
+      out[i] =
+        kind === "f64"
+          ? this.readFloat64s(o, n)
+          : kind === "f32"
+            ? this.readFloat32s(o, n)
+            : kind === "f16"
+              ? this.readHalfs(o, n)
+              : this.readInt32s(o, n);
+    }
+    return out;
+  }
+
+  /**
+   * Read a `VtDictionary`: `[u64 count]`, then per entry a string index (key)
+   * followed by a recursive VtValue — an `int64` offset (relative to its own
+   * position) over the value's data to an 8-byte `ValueRep`.
+   */
+  private readDictionary(off: number, depth: number): UsdDictionary {
+    const out: UsdDictionary = {};
+    if (depth > 16) return out; // corrupt-file recursion guard
+    const count = this.u64(off);
+    let p = off + 8;
+    for (let i = 0; i < count; i++) {
+      const key = this.getToken(this.getStrings()[this.view.getUint32(p, true)] ?? 0);
+      p += 4;
+      const repPos = p + Number(this.i64(p));
+      const rep = this.view.getBigUint64(repPos, true);
+      const b = decodeRepBits(rep);
+      const value =
+        b.type === CrateType.Dictionary && !b.isInlined && !b.isArray
+          ? this.readDictionary(Number(b.payload), depth + 1)
+          : this.getValue(rep);
+      if (key && value !== undefined) out[key] = value;
+      p = repPos + 8;
     }
     return out;
   }

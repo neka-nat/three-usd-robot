@@ -154,19 +154,34 @@ function buildAttribute(crate: CrateReader, name: string, fm: Map<string, bigint
   // the base name in `typeName` and the suffix in `isArray` (parser convention).
   const rawType = asString(crate, fm.get("typeName")) ?? "";
   const isArrayType = rawType.endsWith("[]");
+  const customRep = fm.get("custom");
   const attr: AttributeSpec = {
     kind: "attribute",
     name,
     typeName: isArrayType ? rawType.slice(0, -2) : rawType,
     isArray: isArrayType || (defaultRep !== undefined ? decodeRepBits(defaultRep).isArray : false),
     variability: asNumber(crate, fm.get("variability")) === 1 ? "uniform" : "varying",
-    custom: false,
+    custom: customRep !== undefined && crate.getValue(customRep) === true,
     metadata: {},
     line: 0,
   };
   if (defaultRep !== undefined) {
     const value = crate.getValue(defaultRep);
     if (value !== undefined) attr.value = value;
+  }
+  const tsRep = fm.get("timeSamples");
+  if (tsRep !== undefined) {
+    const ts = crate.getTimeSamples(tsRep);
+    if (ts) {
+      // Sorted by time so downstream consumers and the USDA writer see the
+      // samples in playback order.
+      const samples = new Map<number, UsdValue>();
+      const pairs = ts.times.map((t, i) => [t, ts.values[i]] as const).sort((a, b) => a[0] - b[0]);
+      for (const [t, v] of pairs) {
+        if (v !== undefined) samples.set(t, v);
+      }
+      if (samples.size > 0) attr.timeSamples = samples;
+    }
   }
   return attr;
 }
@@ -229,6 +244,17 @@ function buildLayerMetadata(crate: CrateReader, fm: Map<string, bigint>): Metada
   if (defaultPrim !== undefined) meta.defaultPrim = defaultPrim;
   const metersPerUnit = asNumber(crate, fm.get("metersPerUnit"));
   if (metersPerUnit !== undefined) meta.metersPerUnit = metersPerUnit;
+  // Animation range/rate — the runtime's `getTimeRange()` falls back to these.
+  for (const key of ["startTimeCode", "endTimeCode", "timeCodesPerSecond", "framesPerSecond"]) {
+    const value = asNumber(crate, fm.get(key));
+    if (value !== undefined) meta[key] = value;
+  }
+  const customLayerData = fm.has("customLayerData")
+    ? crate.getValue(fm.get("customLayerData")!)
+    : undefined;
+  if (customLayerData && typeof customLayerData === "object" && !Array.isArray(customLayerData)) {
+    meta.customLayerData = customLayerData as UsdValue;
+  }
   return meta;
 }
 

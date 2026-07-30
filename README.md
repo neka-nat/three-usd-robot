@@ -50,8 +50,8 @@ The CDN is public and CORS-enabled, so this works in the browser too. Try
 FK check, and a re-export to one self-contained file), or open the Vite example
 and pick a robot from the preset list.
 
-Not yet supported: time samples stored inside binary crate files, point/curve
-gprims (`Points`, `BasisCurves`, …), and full material/shader fidelity.
+Not yet supported: point/curve gprims (`Points`, `BasisCurves`, …) and full
+material/shader fidelity.
 
 ## Install
 
