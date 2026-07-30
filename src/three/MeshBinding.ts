@@ -3,11 +3,11 @@
  * `Sphere` / `Cylinder` / `Capsule` / `Cone`) — to Three.js geometry and
  * attaches them under the robot's link objects.
  *
- * Meshes are triangulated with a simple fan, use authored per-vertex normals
- * when present (else computed smooth normals), and read `primvars:st` UVs and
- * `primvars:displayColor`. Solids tessellate from their schema attributes.
- * Geometry is left in stage units; the global `metersPerUnit` scale is applied
- * at the root in M9.
+ * Meshes are triangulated with a simple fan. Primvars (`st` UV sets, `normals`,
+ * `displayColor`) resolve with USD interpolation semantics — `:indices`
+ * de-referencing, vertex vs faceVarying (de-indexed) layouts, multiple UV
+ * channels. Solids tessellate from their schema attributes. Geometry is left
+ * in stage units; the global `metersPerUnit` scale is applied at the root in M9.
  */
 
 import * as THREE from "three";
@@ -39,10 +39,122 @@ export type BindMeshesOptions = {
   textureProvider?: TextureProvider;
   /** Render `BasisCurves` with authored `widths` as tube meshes (M18). */
   curveTubes?: boolean;
+  /** Receives fidelity diagnostics (channel-packing mismatches, M19). */
+  onWarn?: (message: string) => void;
 };
+
+/** Interpolation domain of a resolved primvar (UsdGeom tokens; `varying` ⇒ `vertex`). */
+type PrimvarInterpolation = "constant" | "uniform" | "vertex" | "faceVarying";
+
+type ResolvedPrimvar = {
+  /** Tuples after `primvars:<name>:indices` de-referencing. */
+  values: number[][];
+  interpolation: PrimvarInterpolation;
+};
+
+/** Element counts of the interpolation domains on a mesh. */
+type MeshLens = { points: number; faceVertices: number; faces: number };
+
+/**
+ * Read a primvar (or a bare attribute like `normals`): applies the paired
+ * `:indices` array, then resolves the interpolation — authored metadata
+ * first, else inferred from the value count. Data too short for its domain
+ * degrades to constant instead of producing a broken attribute.
+ */
+function readPrimvar(
+  meshPrim: Prim,
+  attrName: string,
+  isTuple: (v: unknown) => boolean,
+  lens: MeshLens,
+): ResolvedPrimvar | null {
+  const attr = meshPrim.GetAttribute(attrName);
+  const raw = attr.Get();
+  if (!isTuple(raw) || (raw as number[][]).length === 0) return null;
+  const base = raw as number[][];
+  let values = base;
+  const idx = meshPrim.GetAttribute(`${attrName}:indices`).Get();
+  if (isNumberArray(idx)) values = idx.map((i) => base[i] ?? base[0]!);
+
+  const authored = attr.GetMetadata("interpolation");
+  let interpolation: PrimvarInterpolation;
+  if (authored === "varying")
+    interpolation = "vertex"; // ≡ vertex on polygon meshes
+  else if (
+    authored === "constant" ||
+    authored === "uniform" ||
+    authored === "vertex" ||
+    authored === "faceVarying"
+  ) {
+    interpolation = authored;
+  } else if (values.length === lens.points && lens.points > 0) interpolation = "vertex";
+  else if (values.length === lens.faceVertices && lens.faceVertices > 0)
+    interpolation = "faceVarying";
+  else if (values.length === lens.faces && lens.faces > 0) interpolation = "uniform";
+  else interpolation = "constant";
+
+  const needed =
+    interpolation === "vertex"
+      ? lens.points
+      : interpolation === "faceVarying"
+        ? lens.faceVertices
+        : interpolation === "uniform"
+          ? lens.faces
+          : 1;
+  if (values.length < needed) interpolation = "constant";
+  return { values, interpolation };
+}
+
+/**
+ * UV-set primvar names authored on a mesh — `"st"` first (three's `uv`
+ * attribute / channel 0), extras sorted (`uv1`, `uv2`, …). The geometry and
+ * material builders both derive the channel mapping from this order.
+ */
+/** UV-capable primvar value types (pxr spells it `texCoord2f`, assets vary). */
+const UV_TYPE_NAMES: ReadonlySet<string> = new Set(["texcoord2f", "float2"]);
+
+function meshUvSetNames(meshPrim: Prim): string[] {
+  const sets: string[] = [];
+  for (const attr of meshPrim.GetAttributes()) {
+    const name = attr.GetName();
+    if (!name.startsWith("primvars:") || name.endsWith(":indices")) continue;
+    if (!attr.IsArray()) continue;
+    if (!UV_TYPE_NAMES.has(attr.GetTypeName().toLowerCase())) continue;
+    sets.push(name.slice("primvars:".length));
+  }
+  sets.sort((a, b) => (a === "st" ? -1 : b === "st" ? 1 : a < b ? -1 : 1));
+  return sets;
+}
+
+function uvAttrName(index: number): string {
+  return index === 0 ? "uv" : `uv${index}`;
+}
+
+function meshLens(meshPrim: Prim): MeshLens {
+  const points = meshPrim.GetAttribute("points").Get();
+  const counts = meshPrim.GetAttribute("faceVertexCounts").Get();
+  const indices = meshPrim.GetAttribute("faceVertexIndices").Get();
+  const hasTopology = isNumberArray(counts) && isNumberArray(indices);
+  return {
+    points: isVec3Array(points) ? points.length : 0,
+    faceVertices: hasTopology ? (indices as number[]).length : 0,
+    faces: hasTopology ? (counts as number[]).length : 0,
+  };
+}
+
+/** The mesh's `primvars:displayColor`, resolved — shared by geometry & material. */
+function displayColorPrimvar(meshPrim: Prim): ResolvedPrimvar | null {
+  return readPrimvar(meshPrim, "primvars:displayColor", isVec3Array, meshLens(meshPrim));
+}
 
 /**
  * Build a `BufferGeometry` from a Mesh prim, or `null` if it has no points.
+ *
+ * Primvars resolve with full interpolation semantics (M19): `:indices` arrays
+ * are de-referenced, vertex-interpolated `st` sets / `normals` /
+ * `displayColor` bind onto the shared vertices, and any faceVarying primvar
+ * (or per-face color) switches the mesh to a de-indexed layout where every
+ * face corner owns its vertex. Extra UV sets become `uv1`, `uv2`, … in
+ * {@link meshUvSetNames} order.
  *
  * When the mesh carries `materialBind` face subsets, the triangles are ordered
  * subset by subset and a geometry group is added for each — so the mesh can be
@@ -53,35 +165,210 @@ export function buildMeshGeometry(meshPrim: Prim): THREE.BufferGeometry | null {
   const points = meshPrim.GetAttribute("points").Get();
   if (!isVec3Array(points) || points.length === 0) return null;
 
+  const countsRaw = meshPrim.GetAttribute("faceVertexCounts").Get();
+  const indicesRaw = meshPrim.GetAttribute("faceVertexIndices").Get();
+  const counts = isNumberArray(countsRaw) ? countsRaw : null;
+  const indices = isNumberArray(indicesRaw) ? indicesRaw : null;
+  const lens: MeshLens = {
+    points: points.length,
+    faceVertices: counts && indices ? indices.length : 0,
+    faces: counts && indices ? counts.length : 0,
+  };
+
+  const uvSets = meshUvSetNames(meshPrim).map((set) =>
+    readPrimvar(meshPrim, `primvars:${set}`, isVec2Array, lens),
+  );
+  const normals =
+    readPrimvar(meshPrim, "primvars:normals", isVec3Array, lens) ??
+    readPrimvar(meshPrim, "normals", isVec3Array, lens);
+  const color = displayColorPrimvar(meshPrim);
+
+  // Face-varying data (or per-face color) cannot live on shared vertices.
+  const expand =
+    counts !== null &&
+    indices !== null &&
+    ([...uvSets, normals].some((p) => p?.interpolation === "faceVarying") ||
+      color?.interpolation === "faceVarying" ||
+      color?.interpolation === "uniform");
+
+  return expand
+    ? buildExpandedGeometry(meshPrim, points, counts!, indices!, uvSets, normals, color)
+    : buildIndexedGeometry(meshPrim, points, counts, indices, uvSets, normals, color);
+}
+
+/** Shared-vertex (indexed) layout: all primvars are per-vertex or absent. */
+function buildIndexedGeometry(
+  meshPrim: Prim,
+  points: Vec3[],
+  counts: number[] | null,
+  indices: number[] | null,
+  uvSets: (ResolvedPrimvar | null)[],
+  normals: ResolvedPrimvar | null,
+  color: ResolvedPrimvar | null,
+): THREE.BufferGeometry {
   const geometry = new THREE.BufferGeometry();
   geometry.setAttribute("position", new THREE.Float32BufferAttribute(flat3(points), 3));
 
-  const counts = meshPrim.GetAttribute("faceVertexCounts").Get();
-  const indices = meshPrim.GetAttribute("faceVertexIndices").Get();
-  if (isNumberArray(counts) && isNumberArray(indices)) {
+  if (counts && indices) {
     const subsets = getMaterialSubsets(meshPrim);
     if (subsets.length > 0) {
       geometry.setIndex(triangulateBySubset(geometry, counts, indices, subsets));
     } else {
       geometry.setIndex(triangulate(counts, indices));
     }
-  } else if (isNumberArray(indices)) {
+  } else if (indices) {
     geometry.setIndex(indices.slice());
   }
 
-  const normals = meshPrim.GetAttribute("normals").Get();
-  if (isVec3Array(normals) && normals.length === points.length) {
-    geometry.setAttribute("normal", new THREE.Float32BufferAttribute(flat3(normals), 3));
+  if (normals?.interpolation === "vertex") {
+    geometry.setAttribute(
+      "normal",
+      new THREE.Float32BufferAttribute(flat3(normals.values.slice(0, points.length) as Vec3[]), 3),
+    );
   } else {
     geometry.computeVertexNormals();
   }
+  for (const [i, uv] of uvSets.entries()) {
+    if (uv?.interpolation !== "vertex") continue;
+    geometry.setAttribute(
+      uvAttrName(i),
+      new THREE.Float32BufferAttribute(flat2(uv.values.slice(0, points.length) as Vec2[]), 2),
+    );
+  }
+  if (color?.interpolation === "vertex") {
+    geometry.setAttribute(
+      "color",
+      new THREE.Float32BufferAttribute(flat3(color.values.slice(0, points.length) as Vec3[]), 3),
+    );
+  }
+  return geometry;
+}
 
-  const st = meshPrim.GetAttribute("primvars:st").Get();
-  if (isVec2Array(st) && st.length === points.length) {
-    geometry.setAttribute("uv", new THREE.Float32BufferAttribute(flat2(st), 2));
+/**
+ * De-indexed layout for faceVarying primvars: triangulate to face-corner
+ * "slots", then emit one vertex per corner, sampling each primvar in its own
+ * interpolation domain. Subset groups carry over in corner units.
+ */
+function buildExpandedGeometry(
+  meshPrim: Prim,
+  points: Vec3[],
+  counts: number[],
+  indices: number[],
+  uvSets: (ResolvedPrimvar | null)[],
+  normals: ResolvedPrimvar | null,
+  color: ResolvedPrimvar | null,
+): THREE.BufferGeometry {
+  const { slots, faces, groups } = triangulateToSlots(counts, getMaterialSubsets(meshPrim));
+
+  const sample = (p: ResolvedPrimvar, corner: number): number[] => {
+    switch (p.interpolation) {
+      case "faceVarying":
+        return p.values[slots[corner]!] ?? p.values[0]!;
+      case "vertex":
+        return p.values[indices[slots[corner]!]!] ?? p.values[0]!;
+      case "uniform":
+        return p.values[faces[corner]!] ?? p.values[0]!;
+      default:
+        return p.values[0]!;
+    }
+  };
+
+  const geometry = new THREE.BufferGeometry();
+  const position = new Array<number>(slots.length * 3);
+  for (let c = 0; c < slots.length; c++) {
+    const v = points[indices[slots[c]!]!] ?? [0, 0, 0];
+    position[c * 3] = v[0];
+    position[c * 3 + 1] = v[1];
+    position[c * 3 + 2] = v[2];
+  }
+  geometry.setAttribute("position", new THREE.Float32BufferAttribute(position, 3));
+
+  for (const [i, uv] of uvSets.entries()) {
+    if (!uv || uv.interpolation === "constant") continue;
+    const out = new Array<number>(slots.length * 2);
+    for (let c = 0; c < slots.length; c++) {
+      const t = sample(uv, c);
+      out[c * 2] = t[0] ?? 0;
+      out[c * 2 + 1] = t[1] ?? 0;
+    }
+    geometry.setAttribute(uvAttrName(i), new THREE.Float32BufferAttribute(out, 2));
   }
 
+  const emitVec3 = (p: ResolvedPrimvar, name: string) => {
+    const out = new Array<number>(slots.length * 3);
+    for (let c = 0; c < slots.length; c++) {
+      const t = sample(p, c);
+      out[c * 3] = t[0] ?? 0;
+      out[c * 3 + 1] = t[1] ?? 0;
+      out[c * 3 + 2] = t[2] ?? 0;
+    }
+    geometry.setAttribute(name, new THREE.Float32BufferAttribute(out, 3));
+  };
+  if (normals && normals.interpolation !== "constant") emitVec3(normals, "normal");
+  else geometry.computeVertexNormals();
+  if (color && color.interpolation !== "constant") emitVec3(color, "color");
+
+  for (const g of groups) geometry.addGroup(g.start, g.count, g.materialIndex);
   return geometry;
+}
+
+/**
+ * Triangulate faces into corner-slot triples (subset by subset, unassigned
+ * faces last — the ordering contract of {@link triangulateBySubset}), keeping
+ * the owning face of every corner and the subset group ranges.
+ */
+function triangulateToSlots(
+  faceVertexCounts: number[],
+  subsets: MaterialSubset[],
+): {
+  slots: number[];
+  faces: number[];
+  groups: { start: number; count: number; materialIndex: number }[];
+} {
+  const faceStart: number[] = [];
+  let offset = 0;
+  for (const count of faceVertexCounts) {
+    faceStart.push(offset);
+    offset += count;
+  }
+
+  const slots: number[] = [];
+  const faces: number[] = [];
+  const emit = (face: number) => {
+    const start = faceStart[face]!;
+    const count = faceVertexCounts[face]!;
+    for (let k = 2; k < count; k++) {
+      slots.push(start, start + k - 1, start + k);
+      faces.push(face, face, face);
+    }
+  };
+
+  const groups: { start: number; count: number; materialIndex: number }[] = [];
+  if (subsets.length === 0) {
+    for (let face = 0; face < faceVertexCounts.length; face++) emit(face);
+    return { slots, faces, groups };
+  }
+
+  const claimed = new Uint8Array(faceVertexCounts.length);
+  for (const [index, subset] of subsets.entries()) {
+    const begin = slots.length;
+    for (const face of subset.faces) {
+      if (face < 0 || face >= faceVertexCounts.length || claimed[face]) continue;
+      claimed[face] = 1;
+      emit(face);
+    }
+    if (slots.length > begin) {
+      groups.push({ start: begin, count: slots.length - begin, materialIndex: index });
+    }
+  }
+  const begin = slots.length;
+  for (let face = 0; face < faceVertexCounts.length; face++) {
+    if (!claimed[face]) emit(face);
+  }
+  if (slots.length > begin) {
+    groups.push({ start: begin, count: slots.length - begin, materialIndex: subsets.length });
+  }
+  return { slots, faces, groups };
 }
 
 /**
@@ -129,6 +416,8 @@ export type BuildGprimOptions = {
    * 1-px lines (default `false`).
    */
   curveTubes?: boolean;
+  /** Receives fidelity diagnostics (channel-packing mismatches, M19). */
+  onWarn?: (message: string) => void;
 };
 
 /**
@@ -152,7 +441,10 @@ export function buildGprimObject(
     default: {
       const geometry = buildGprimGeometry(prim);
       if (!geometry) return null;
-      return new THREE.Mesh(geometry, buildMeshMaterials(prim, stage, options.textureProvider));
+      return new THREE.Mesh(
+        geometry,
+        buildMeshMaterials(prim, stage, options.textureProvider, options.onWarn),
+      );
     }
   }
 }
@@ -409,34 +701,67 @@ export function buildMeshMaterial(
   textures?: TextureProvider,
   /** Resolve the material binding from here instead (a `GeomSubset`). */
   bindingPrim?: Prim,
+  /** Receives fidelity diagnostics (channel-packing mismatches, M19). */
+  onWarn?: (message: string) => void,
 ): THREE.Material {
   const color = new THREE.Color(DEFAULT_COLOR);
   let opacity = 1;
+  let vertexColors = false;
 
   const bound = stage ? resolveBoundMaterial(stage, bindingPrim ?? meshPrim) : undefined;
   if (bound?.color) {
     color.setRGB(bound.color[0], bound.color[1], bound.color[2]);
   } else {
-    const displayColor = meshPrim.GetAttribute("primvars:displayColor").Get();
-    if (isVec3Array(displayColor) && displayColor[0]) {
-      const [r, g, b] = displayColor[0];
-      color.setRGB(r, g, b);
+    const displayColor = displayColorPrimvar(meshPrim);
+    if (displayColor && displayColor.interpolation !== "constant") {
+      // Per-vertex / per-face displayColor → vertex colors; the geometry
+      // builder authors the matching `color` attribute.
+      vertexColors = true;
+      color.setRGB(1, 1, 1);
+    } else if (displayColor?.values[0]) {
+      const [r, g, b] = displayColor.values[0];
+      color.setRGB(r ?? 0, g ?? 0, b ?? 0);
     }
   }
   if (bound?.opacity !== undefined) opacity = bound.opacity;
 
-  // Resolve a channel's `THREE.Texture`, forwarding its wrap modes and
-  // `UsdTransform2d` (the `UsdUVTexture.inputs:scale`/`bias` are folded into the
-  // material factors below, not the sampler).
-  const tex = (rt: ResolvedTexture | undefined, cs: "srgb" | "linear") =>
-    rt && textures
-      ? textures(rt.path, {
-          colorSpace: cs,
-          ...(rt.wrapS ? { wrapS: rt.wrapS } : {}),
-          ...(rt.wrapT ? { wrapT: rt.wrapT } : {}),
-          ...(rt.transform ? { transform: rt.transform } : {}),
-        })
-      : null;
+  // Resolve a channel's `THREE.Texture`, forwarding its wrap modes, UV-set
+  // channel, colorspace, and `UsdTransform2d` (the `UsdUVTexture
+  // .inputs:scale`/`bias` are folded into the material factors below, not the
+  // sampler). `inputs:sourceColorSpace` overrides the per-channel default.
+  const uvSetNames = meshUvSetNames(meshPrim);
+  const tex = (rt: ResolvedTexture | undefined, cs: "srgb" | "linear") => {
+    if (!rt || !textures) return null;
+    const channel = rt.uvSet ? Math.max(uvSetNames.indexOf(rt.uvSet), 0) : 0;
+    const colorSpace =
+      rt.sourceColorSpace === "raw" ? "linear" : rt.sourceColorSpace === "sRGB" ? "srgb" : cs;
+    return textures(rt.path, {
+      colorSpace,
+      ...(rt.wrapS ? { wrapS: rt.wrapS } : {}),
+      ...(rt.wrapT ? { wrapT: rt.wrapT } : {}),
+      ...(rt.transform ? { transform: rt.transform } : {}),
+      ...(channel > 0 ? { channel } : {}),
+    });
+  };
+
+  // three.js samples fixed channels from packed maps (glTF convention). A
+  // network wired to a different single-channel output can't be honoured
+  // without repacking — surface it instead of sampling silently wrong data.
+  if (onWarn) {
+    const packed = [
+      [bound?.roughnessTexture, "g", "roughness"],
+      [bound?.metalnessTexture, "b", "metalness"],
+      [bound?.occlusionTexture, "r", "occlusion"],
+    ] as const;
+    for (const [rt, expected, label] of packed) {
+      const channel = rt?.outputChannel;
+      if (channel && channel !== "rgb" && channel !== expected) {
+        onWarn(
+          `${meshPrim.GetPath()}: ${label} reads outputs:${channel}, but three.js samples the "${expected}" channel of the map — repack the texture to the glTF ORM layout`,
+        );
+      }
+    }
+  }
 
   const map = tex(bound?.colorTexture, "srgb");
   // `inputs:scale` on the diffuse texture tints the map; otherwise pass through.
@@ -480,13 +805,14 @@ export function buildMeshMaterial(
   const transparent = alphaTest === 0 && hasAlphaSource;
 
   const doubleSided = meshPrim.GetAttribute("doubleSided").Get() === true;
-  const material = new THREE.MeshStandardMaterial({
+  const params: THREE.MeshStandardMaterialParameters = {
     color,
     metalness,
     roughness,
     emissive,
     transparent,
     opacity,
+    ...(vertexColors ? { vertexColors: true } : {}),
     ...(alphaTest > 0 ? { alphaTest } : {}),
     side: doubleSided ? THREE.DoubleSide : THREE.FrontSide,
     ...(map ? { map } : {}),
@@ -496,7 +822,39 @@ export function buildMeshMaterial(
     ...(metalnessMap ? { metalnessMap } : {}),
     ...(aoMap ? { aoMap } : {}),
     ...(emissiveMap ? { emissiveMap } : {}),
-  });
+  };
+
+  // UsdPreviewSurface physical inputs promote the material (M19); plain
+  // assets keep getting the cheaper MeshStandardMaterial.
+  const physical =
+    bound !== undefined &&
+    (bound.ior !== undefined ||
+      bound.clearcoat !== undefined ||
+      bound.clearcoatRoughness !== undefined ||
+      bound.specularColor !== undefined);
+  const material = physical
+    ? new THREE.MeshPhysicalMaterial(params)
+    : new THREE.MeshStandardMaterial(params);
+  if (material instanceof THREE.MeshPhysicalMaterial && bound) {
+    if (bound.ior !== undefined) material.ior = bound.ior;
+    if (bound.clearcoat !== undefined) material.clearcoat = bound.clearcoat;
+    if (bound.clearcoatRoughness !== undefined)
+      material.clearcoatRoughness = bound.clearcoatRoughness;
+    if (bound.specularColor) {
+      material.specularColor.setRGB(
+        bound.specularColor[0],
+        bound.specularColor[1],
+        bound.specularColor[2],
+      );
+    }
+  }
+  if (bound?.emissiveIntensity !== undefined) material.emissiveIntensity = bound.emissiveIntensity;
+  // UsdPreviewSurface normal maps author scale (2,2,2,1) / bias (−1,−1,−1,0)
+  // to decode [0,1] → [−1,1]; three does that internally, so scale/2 is the
+  // residual normalScale (the sign carries DirectX-style green flips).
+  if (normalMap && bound?.normalTexture?.scale) {
+    material.normalScale.set(bound.normalTexture.scale[0] / 2, bound.normalTexture.scale[1] / 2);
+  }
   // Carry the USD material name so re-exports keep it (and dedupe by it).
   if (bound?.name) material.name = bound.name;
   return material;
@@ -518,6 +876,7 @@ export function bindRobotMeshes(
   const gprimOptions: BuildGprimOptions = {
     ...(options.textureProvider ? { textureProvider: options.textureProvider } : {}),
     ...(options.curveTubes ? { curveTubes: true } : {}),
+    ...(options.onWarn ? { onWarn: options.onWarn } : {}),
   };
 
   for (const [key, link] of Object.entries(desc.links)) {
@@ -555,7 +914,11 @@ export function bindSceneMeshes(
   stage: Stage,
   robot3d: ThreeUsdRobot,
   desc: RobotDescription,
-  options: { textureProvider?: TextureProvider; curveTubes?: boolean } = {},
+  options: {
+    textureProvider?: TextureProvider;
+    curveTubes?: boolean;
+    onWarn?: (message: string) => void;
+  } = {},
 ): number {
   const owned = new Set<string>();
   for (const link of Object.values(desc.links)) {
@@ -586,6 +949,7 @@ export function bindSceneMeshes(
   const gprimOptions: BuildGprimOptions = {
     ...(options.textureProvider ? { textureProvider: options.textureProvider } : {}),
     ...(options.curveTubes ? { curveTubes: true } : {}),
+    ...(options.onWarn ? { onWarn: options.onWarn } : {}),
   };
 
   let attached = 0;
@@ -624,12 +988,13 @@ export function buildMeshMaterials(
   meshPrim: Prim,
   stage?: Stage,
   textures?: TextureProvider,
+  onWarn?: (message: string) => void,
 ): THREE.Material | THREE.Material[] {
   const subsets = stage ? getMaterialSubsets(meshPrim) : [];
-  if (subsets.length === 0) return buildMeshMaterial(meshPrim, stage, textures);
+  if (subsets.length === 0) return buildMeshMaterial(meshPrim, stage, textures, undefined, onWarn);
   return [
-    ...subsets.map((s) => buildMeshMaterial(meshPrim, stage, textures, s.prim)),
-    buildMeshMaterial(meshPrim, stage, textures),
+    ...subsets.map((s) => buildMeshMaterial(meshPrim, stage, textures, s.prim, onWarn)),
+    buildMeshMaterial(meshPrim, stage, textures, undefined, onWarn),
   ];
 }
 

@@ -169,6 +169,17 @@ function buildAttribute(crate: CrateReader, name: string, fm: Map<string, bigint
     const value = crate.getValue(defaultRep);
     if (value !== undefined) attr.value = value;
   }
+  // Shader-network connections (`.connect` in USDA) live in `connectionPaths`.
+  const connections = fm.has("connectionPaths")
+    ? crate.getValue(fm.get("connectionPaths")!)
+    : undefined;
+  if (Array.isArray(connections)) {
+    const paths = connections.filter((c): c is string => typeof c === "string" && c.length > 0);
+    if (paths.length > 0) attr.connections = paths;
+  }
+  // Primvar interpolation drives faceVarying/vertex handling (M19).
+  const interpolation = asString(crate, fm.get("interpolation"));
+  if (interpolation !== undefined) attr.metadata.interpolation = interpolation;
   const tsRep = fm.get("timeSamples");
   if (tsRep !== undefined) {
     const ts = crate.getTimeSamples(tsRep);

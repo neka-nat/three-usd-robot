@@ -175,18 +175,21 @@ export class ThreeUsdRobotLoader {
       const textureProvider =
         (this.options.loadTextures ?? true) ? createTextureProvider(resolver, baseUrl) : undefined;
       const curveTubes = this.options.curveTubes ?? false;
+      const onWarn = this.options.onWarn;
       if (loadVisuals || loadCollisions) {
         bindRobotMeshes(stage, robot3d, robot, {
           loadVisuals,
           loadCollisions,
           ...(textureProvider ? { textureProvider } : {}),
           ...(curveTubes ? { curveTubes } : {}),
+          ...(onWarn ? { onWarn } : {}),
         });
       }
       if (loadScene) {
         bindSceneMeshes(stage, robot3d, robot, {
           ...(textureProvider ? { textureProvider } : {}),
           ...(curveTubes ? { curveTubes } : {}),
+          ...(onWarn ? { onWarn } : {}),
         });
       }
       this.warnUnsupportedGprims(stage);

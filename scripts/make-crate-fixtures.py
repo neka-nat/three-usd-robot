@@ -19,7 +19,7 @@ Requires pxr (pip install usd-core). Run from the repo root:
     python3 scripts/make-crate-fixtures.py
 """
 
-from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics, Vt
+from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics, UsdShade, Vt
 
 OUT_USDC = "test-assets/anim_arm.usdc"
 OUT_USDA = "test-assets/anim_arm.usda"
@@ -85,6 +85,30 @@ def build(stage: Usd.Stage) -> None:
     op = panel.AddTransformOp()
     op.Set(Gf.Matrix4d(1.0), 0)
     op.Set(Gf.Matrix4d(1.0).SetTranslate(Gf.Vec3d(0.5, 0.0, 0.25)), 96)
+
+    # M19: a UsdPreviewSurface network (crate `connectionPaths`) driving a quad
+    # whose `st` primvar is faceVarying (crate `interpolation` field).
+    UsdGeom.Scope.Define(stage, "/World/Looks")
+    mat = UsdShade.Material.Define(stage, "/World/Looks/Mat")
+    surf = UsdShade.Shader.Define(stage, "/World/Looks/Mat/Surface")
+    surf.CreateIdAttr("UsdPreviewSurface")
+    tex = UsdShade.Shader.Define(stage, "/World/Looks/Mat/Tex")
+    tex.CreateIdAttr("UsdUVTexture")
+    tex.CreateInput("file", Sdf.ValueTypeNames.Asset).Set("./checker.png")
+    surf.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f).ConnectToSource(
+        tex.ConnectableAPI(), "rgb"
+    )
+    mat.CreateSurfaceOutput().ConnectToSource(surf.ConnectableAPI(), "surface")
+
+    quad = UsdGeom.Mesh.Define(stage, "/World/base/skin")
+    quad.CreatePointsAttr([(0, 0, 0), (1, 0, 0), (1, 1, 0), (0, 1, 0)])
+    quad.CreateFaceVertexCountsAttr([4])
+    quad.CreateFaceVertexIndicesAttr([0, 1, 2, 3])
+    st = UsdGeom.PrimvarsAPI(quad).CreatePrimvar(
+        "st", Sdf.ValueTypeNames.TexCoord2fArray, UsdGeom.Tokens.faceVarying
+    )
+    st.Set([(0, 0), (1, 0), (1, 1), (0, 1)])
+    UsdShade.MaterialBindingAPI.Apply(quad.GetPrim()).Bind(mat)
 
 
 def main() -> None:

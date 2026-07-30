@@ -96,6 +96,11 @@ export class Attribute {
   GetConnections(): SdfPath[] {
     return this._spec?.connections ?? [];
   }
+
+  /** Authored attribute metadata (`interpolation`, `elementSize`, …). */
+  GetMetadata(key: string): UsdValue | undefined {
+    return this._spec?.metadata[key];
+  }
 }
 
 /** A relationship on a prim (`UsdRelationship`-like). */
@@ -132,5 +137,10 @@ export class Relationship {
 
   GetTargets(): SdfPath[] {
     return this._spec?.targets ?? [];
+  }
+
+  /** Authored relationship metadata (`bindMaterialAs`, …). */
+  GetMetadata(key: string): UsdValue | undefined {
+    return this._spec?.metadata[key];
   }
 }

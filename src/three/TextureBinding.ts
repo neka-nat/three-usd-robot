@@ -27,6 +27,8 @@ export type TextureOptions = {
   wrapS?: TextureWrap;
   wrapT?: TextureWrap;
   transform?: TextureTransform;
+  /** UV channel index (0 = `uv`, 1 = `uv1`, …) for multi-UV-set meshes. */
+  channel?: number;
 };
 
 /** Resolve an authored texture asset path to a `THREE.Texture` (or `null`). */
@@ -65,6 +67,7 @@ export function createTextureProvider(resolver: AssetResolver, baseUrl: string):
       options.colorSpace === "linear" ? THREE.NoColorSpace : THREE.SRGBColorSpace;
     texture.wrapS = toThreeWrap(options.wrapS);
     texture.wrapT = toThreeWrap(options.wrapT);
+    if (options.channel !== undefined) texture.channel = options.channel;
     applyTransform(texture, options.transform);
 
     imageFor(url)

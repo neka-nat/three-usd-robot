@@ -53,9 +53,15 @@ The CDN is public and CORS-enabled, so this works in the browser too. Try
 FK check, and a re-export to one self-contained file), or open the Vite example
 and pick a robot from the preset list.
 
-Not yet supported: full material/shader fidelity (and the exotic curve
-schemas — `NurbsCurves`, `HermiteCurves`, `NurbsPatch` — which load with a
-warning and are skipped).
+Materials target **UsdPreviewSurface fidelity plus an OmniPBR mapping**:
+constant and textured inputs, faceVarying / indexed UVs, multiple UV sets,
+per-vertex display colors, physical extensions (`ior` / `clearcoat` /
+specular workflow → `MeshPhysicalMaterial`), packed ORM maps,
+`sourceColorSpace`, and purpose/strength-aware bindings. Executing MDL or
+MaterialX shader graphs is out of scope. Not yet supported:
+collection-based material bindings, and the exotic curve schemas
+(`NurbsCurves`, `HermiteCurves`, `NurbsPatch`) which load with a warning and
+are skipped.
 
 ## Install
 

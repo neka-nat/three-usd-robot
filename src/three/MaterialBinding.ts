@@ -39,6 +39,19 @@ export type ResolvedTexture = {
   scale?: [number, number, number, number];
   /** `inputs:bias` — added to the sampled value. */
   bias?: [number, number, number, number];
+  /**
+   * UV-set (primvar) name the texture reads, resolved through the `inputs:st`
+   * connection to a `UsdPrimvarReader_float2.inputs:varname`. Absent ⇒ `"st"`.
+   */
+  uvSet?: string;
+  /** `inputs:sourceColorSpace` — overrides the per-channel colorspace default. */
+  sourceColorSpace?: "raw" | "sRGB" | "auto";
+  /**
+   * Which output the consuming input connects to (`outputs:r` → `"r"`, …).
+   * three.js samples fixed channels (roughness = G, metalness = B, ao = R);
+   * a mismatch is surfaced as a load warning.
+   */
+  outputChannel?: "r" | "g" | "b" | "a" | "rgb";
 };
 
 export type ResolvedMaterial = {
@@ -54,6 +67,16 @@ export type ResolvedMaterial = {
    * clip / cutout); when `0`/absent, sub-unit opacity blends translucently.
    */
   opacityThreshold?: number;
+  /** `inputs:ior` — promotes the three material to `MeshPhysicalMaterial`. */
+  ior?: number;
+  /** `inputs:clearcoat` (physical promotion). */
+  clearcoat?: number;
+  /** `inputs:clearcoatRoughness` (physical promotion). */
+  clearcoatRoughness?: number;
+  /** `inputs:specularColor`, only when `inputs:useSpecularWorkflow = 1`. */
+  specularColor?: Vec3;
+  /** OmniPBR `inputs:emissive_intensity` — multiplies the emissive color. */
+  emissiveIntensity?: number;
   /** Diffuse/albedo texture, if any. */
   colorTexture?: ResolvedTexture;
   /** Opacity / alpha texture (may be the same image as `colorTexture`). */
@@ -152,6 +175,21 @@ export function resolveBoundMaterial(stage: Stage, prim: Prim): ResolvedMaterial
   // has no such input (undefined ⇒ honoured).
   if (emissive && shader.GetAttribute("inputs:enable_emission").Get() !== false) {
     result.emissiveColor = emissive;
+    const intensity = firstNumber(shader, ["inputs:emissive_intensity"]);
+    if (intensity !== undefined) result.emissiveIntensity = intensity;
+  }
+
+  // UsdPreviewSurface physical inputs — their presence promotes the three
+  // material from Standard to Physical.
+  const ior = firstNumber(shader, ["inputs:ior"]);
+  if (ior !== undefined) result.ior = ior;
+  const clearcoat = firstNumber(shader, ["inputs:clearcoat"]);
+  if (clearcoat !== undefined) result.clearcoat = clearcoat;
+  const clearcoatRoughness = firstNumber(shader, ["inputs:clearcoatRoughness"]);
+  if (clearcoatRoughness !== undefined) result.clearcoatRoughness = clearcoatRoughness;
+  if (shader.GetAttribute("inputs:useSpecularWorkflow").Get() === 1) {
+    const specular = firstColor(shader, ["inputs:specularColor"]);
+    if (specular) result.specularColor = specular;
   }
 
   const colorTex = findTexture(shader, TEXTURE_LOOKUPS.color);
@@ -169,18 +207,38 @@ export function resolveBoundMaterial(stage: Stage, prim: Prim): ResolvedMaterial
   const emissiveTex = findTexture(shader, TEXTURE_LOOKUPS.emissive);
   if (emissiveTex !== undefined) result.emissiveTexture = emissiveTex;
 
+  // OmniPBR packed ORM: when enabled it replaces the per-channel lookups.
+  // Its layout (AO = R, roughness = G, metalness = B) matches what three.js
+  // samples, so the channels line up by construction.
+  const ormFile = shader.GetAttribute("inputs:ORM_texture").Get();
+  if (
+    shader.GetAttribute("inputs:enable_ORM_texture").Get() === true &&
+    ormFile instanceof AssetPath &&
+    ormFile.path
+  ) {
+    const transform = mdlTextureTransform(shader);
+    const orm: ResolvedTexture = { path: ormFile.path, ...(transform ? { transform } : {}) };
+    result.occlusionTexture = { ...orm, outputChannel: "r" };
+    result.roughnessTexture = { ...orm, outputChannel: "g" };
+    result.metalnessTexture = { ...orm, outputChannel: "b" };
+  }
+
   return result;
 }
 
 /**
  * Resolve a channel's texture: an OmniPBR direct asset input takes precedence
- * (path only), else follow a `UsdPreviewSurface` input's connection to a
- * `UsdUVTexture` and read its `inputs:file` plus sampler/transform state.
+ * (path + shader-level MDL UV transform), else follow a `UsdPreviewSurface`
+ * input's connection to a `UsdUVTexture` and read its `inputs:file` plus
+ * sampler/transform state and the connected output channel.
  */
 function findTexture(shader: Prim, lookup: TextureLookup): ResolvedTexture | undefined {
   for (const name of lookup.direct) {
     const v = shader.GetAttribute(name).Get();
-    if (v instanceof AssetPath && v.path) return { path: v.path };
+    if (v instanceof AssetPath && v.path) {
+      const transform = mdlTextureTransform(shader);
+      return { path: v.path, ...(transform ? { transform } : {}) };
+    }
   }
   for (const name of lookup.surface) {
     const conn = shader.GetAttribute(name).GetConnections()[0];
@@ -188,14 +246,51 @@ function findTexture(shader: Prim, lookup: TextureLookup): ResolvedTexture | und
     const texPrim = shader.GetStage().GetPrimAtPath(conn.split(".")[0]!);
     if (!texPrim) continue;
     const file = texPrim.GetAttribute("inputs:file").Get();
-    if (file instanceof AssetPath && file.path) return readUvTexture(texPrim, file.path);
+    if (file instanceof AssetPath && file.path) {
+      const tex = readUvTexture(texPrim, file.path);
+      const channel = outputChannelOf(conn);
+      if (channel) tex.outputChannel = channel;
+      return tex;
+    }
   }
   return undefined;
 }
 
+/** The `outputs:*` suffix of a connection path, normalized to a channel tag. */
+function outputChannelOf(connection: string): ResolvedTexture["outputChannel"] | undefined {
+  const m = /\.outputs:(\w+)$/.exec(connection);
+  switch (m?.[1]) {
+    case "r":
+    case "g":
+    case "b":
+    case "a":
+      return m[1];
+    case "rgb":
+    case "rgba":
+      return "rgb";
+    default:
+      return undefined;
+  }
+}
+
+/**
+ * OmniPBR MDL shader-level UV transform (`inputs:texture_translate` /
+ * `texture_rotate` / `texture_scale`) — applies to the shader's textures.
+ */
+function mdlTextureTransform(shader: Prim): TextureTransform | undefined {
+  const transform: TextureTransform = {};
+  const translation = numArray(shader, "inputs:texture_translate", 2);
+  if (translation) transform.translation = translation as Vec2;
+  const scale = numArray(shader, "inputs:texture_scale", 2);
+  if (scale) transform.scale = scale as Vec2;
+  const rotation = shader.GetAttribute("inputs:texture_rotate").Get();
+  if (typeof rotation === "number") transform.rotation = rotation;
+  return Object.keys(transform).length > 0 ? transform : undefined;
+}
+
 const WRAP_VALUES = new Set(["repeat", "clamp", "mirror", "black"]);
 
-/** Read a `UsdUVTexture` prim's wrap modes, scale/bias, and `st` transform. */
+/** Read a `UsdUVTexture` prim's wrap modes, scale/bias, colorspace, and `st` chain. */
 function readUvTexture(texPrim: Prim, path: string): ResolvedTexture {
   const tex: ResolvedTexture = { path };
 
@@ -209,26 +304,48 @@ function readUvTexture(texPrim: Prim, path: string): ResolvedTexture {
   const bias = numArray(texPrim, "inputs:bias", 4);
   if (bias) tex.bias = bias as [number, number, number, number];
 
-  const transform = readTransform2d(texPrim);
-  if (transform) tex.transform = transform;
+  const sourceColorSpace = texPrim.GetAttribute("inputs:sourceColorSpace").Get();
+  if (sourceColorSpace === "raw" || sourceColorSpace === "sRGB" || sourceColorSpace === "auto") {
+    tex.sourceColorSpace = sourceColorSpace;
+  }
+
+  const st = readStChain(texPrim);
+  if (st.transform) tex.transform = st.transform;
+  if (st.uvSet) tex.uvSet = st.uvSet;
   return tex;
 }
 
-/** Follow `inputs:st` to a `UsdTransform2d` node and read its translate/rotate/scale. */
-function readTransform2d(texPrim: Prim): TextureTransform | undefined {
-  const conn = texPrim.GetAttribute("inputs:st").GetConnections()[0];
-  if (!conn) return undefined;
-  const node = texPrim.GetStage().GetPrimAtPath(conn.split(".")[0]!);
-  if (!node || node.GetAttribute("info:id").Get() !== "UsdTransform2d") return undefined;
+/** Follow a shader input's connection to its source prim. */
+function connectedPrim(prim: Prim, input: string): Prim | null {
+  const conn = prim.GetAttribute(input).GetConnections()[0];
+  if (!conn) return null;
+  return prim.GetStage().GetPrimAtPath(conn.split(".")[0]!);
+}
 
-  const transform: TextureTransform = {};
-  const translation = numArray(node, "inputs:translation", 2);
-  if (translation) transform.translation = translation as Vec2;
-  const scale = numArray(node, "inputs:scale", 2);
-  if (scale) transform.scale = scale as Vec2;
-  const rotation = node.GetAttribute("inputs:rotation").Get();
-  if (typeof rotation === "number") transform.rotation = rotation;
-  return Object.keys(transform).length > 0 ? transform : undefined;
+/**
+ * Walk the `inputs:st` chain: an optional `UsdTransform2d` (translate /
+ * rotate / scale) feeding from a `UsdPrimvarReader_float2`, whose
+ * `inputs:varname` names the UV set the texture samples.
+ */
+function readStChain(texPrim: Prim): { transform?: TextureTransform; uvSet?: string } {
+  const out: { transform?: TextureTransform; uvSet?: string } = {};
+  let node = connectedPrim(texPrim, "inputs:st");
+  if (node && node.GetAttribute("info:id").Get() === "UsdTransform2d") {
+    const transform: TextureTransform = {};
+    const translation = numArray(node, "inputs:translation", 2);
+    if (translation) transform.translation = translation as Vec2;
+    const scale = numArray(node, "inputs:scale", 2);
+    if (scale) transform.scale = scale as Vec2;
+    const rotation = node.GetAttribute("inputs:rotation").Get();
+    if (typeof rotation === "number") transform.rotation = rotation;
+    if (Object.keys(transform).length > 0) out.transform = transform;
+    node = connectedPrim(node, "inputs:in");
+  }
+  if (node && node.GetAttribute("info:id").Get() === "UsdPrimvarReader_float2") {
+    const varname = node.GetAttribute("inputs:varname").Get();
+    if (typeof varname === "string" && varname.length > 0) out.uvSet = varname;
+  }
+  return out;
 }
 
 /** Read a numeric attribute as a fixed-length array, or `undefined`. */
@@ -240,15 +357,28 @@ function numArray(prim: Prim, name: string, length: number): number[] | undefine
   return undefined;
 }
 
-/** Walk up from `prim` to the first ancestor with a `material:binding`. */
+/**
+ * Resolve the bound material path for `prim` (UsdShade semantics, preview
+ * rendering): at each prim, `material:binding:preview` beats the all-purpose
+ * `material:binding`. Walking rootward, the nearest binding wins — unless an
+ * ancestor authors `bindMaterialAs = "strongerThanDescendants"`, which
+ * overrides everything below it (topmost such binding is final).
+ */
 function findBinding(prim: Prim): string | undefined {
+  let chosen: string | undefined;
   let p: Prim | null = prim;
   while (p) {
-    const targets = p.GetRelationship("material:binding").GetTargets();
-    if (targets.length > 0) return targets[0];
+    for (const name of ["material:binding:preview", "material:binding"]) {
+      const rel = p.GetRelationship(name);
+      const target = rel.GetTargets()[0];
+      if (!target) continue;
+      const stronger = rel.GetMetadata("bindMaterialAs") === "strongerThanDescendants";
+      if (chosen === undefined || stronger) chosen = target;
+      break; // preview found — don't let the all-purpose binding of the same prim override
+    }
     p = p.GetParent();
   }
-  return undefined;
+  return chosen;
 }
 
 function findSurfaceShader(material: Prim): Prim | undefined {
