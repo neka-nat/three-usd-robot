@@ -23,7 +23,7 @@ import {
 import { COLLISION_API } from "../schemas/usdPhysics.js";
 import type { Prim } from "../usd/Prim.js";
 import type { Stage } from "../usd/Stage.js";
-import { computeLocalTransform, computeWorldTransform } from "../usd/xformOps.js";
+import { computeLocalTransform } from "../usd/xformOps.js";
 import { type ResolvedTexture, resolveBoundMaterial } from "./MaterialBinding.js";
 import type { TextureProvider } from "./TextureBinding.js";
 import type { ThreeUsdRobot } from "./ThreeUsdRobot.js";
@@ -278,9 +278,12 @@ export function bindRobotMeshes(
 
 /**
  * Attach the gprims that belong to no link — the static scenery of a cell that
- * also contains robots. They are placed by their authored stage transform
- * under the robot root, so the loader's up-axis and unit normalization applies
- * to them too. Collision-only and guide/proxy prims are skipped.
+ * also contains robots. The authored prim hierarchy is mirrored with
+ * `THREE.Group` nodes (each carrying `userData.primPath` and its prim's local
+ * transform), so grouped scenery — a pallet and its cartons, a fence and its
+ * wires — stays one movable subtree. World placements are unchanged, and the
+ * loader's up-axis and unit normalization still applies at the robot root.
+ * Collision-only and guide/proxy prims are skipped.
  */
 export function bindSceneMeshes(
   stage: Stage,
@@ -295,6 +298,25 @@ export function bindSceneMeshes(
     owned.add(link.primPath);
   }
 
+  // Ancestor prims materialize lazily, so subtrees with nothing renderable
+  // produce no empty groups. Meshes register too: gprims can nest.
+  const nodes = new Map<string, THREE.Object3D>();
+  const containerFor = (prim: Prim): THREE.Object3D => {
+    const parent = prim.GetParent();
+    if (!parent || parent.IsPseudoRoot()) return robot3d;
+    let node = nodes.get(parent.GetPath());
+    if (!node) {
+      node = new THREE.Group();
+      node.name = parent.GetName();
+      node.userData.kind = "scene";
+      node.userData.primPath = parent.GetPath();
+      placeAtLocal(node, parent);
+      containerFor(parent).add(node);
+      nodes.set(parent.GetPath(), node);
+    }
+    return node;
+  };
+
   let attached = 0;
   for (const prim of stage.Traverse()) {
     if (!isRenderableGprim(prim) || owned.has(prim.GetPath())) continue;
@@ -308,13 +330,19 @@ export function bindSceneMeshes(
     mesh.name = prim.GetName();
     mesh.userData.kind = "scene";
     mesh.userData.primPath = prim.GetPath();
-    mesh.matrixAutoUpdate = false;
-    mesh.matrix.fromArray(computeWorldTransform(prim));
-    mesh.matrixWorldNeedsUpdate = true;
-    robot3d.add(mesh);
+    placeAtLocal(mesh, prim);
+    containerFor(prim).add(mesh);
+    nodes.set(prim.GetPath(), mesh);
     attached++;
   }
   return attached;
+}
+
+/** Fix `object` at its prim's local transform (scenery is static). */
+function placeAtLocal(object: THREE.Object3D, prim: Prim): void {
+  object.matrixAutoUpdate = false;
+  object.matrix.fromArray(computeLocalTransform(prim).matrix);
+  object.matrixWorldNeedsUpdate = true;
 }
 
 /**

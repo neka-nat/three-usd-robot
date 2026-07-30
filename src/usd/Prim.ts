@@ -134,6 +134,16 @@ export class Prim {
     return this._spec?.metadata ?? {};
   }
 
+  /**
+   * Model-hierarchy kind from the `kind` metadata — `"component"`, `"group"`,
+   * `"assembly"`, `"subcomponent"`, … — or `""` when unauthored. The standard
+   * signal for selection granularity (usdview's "select by kind").
+   */
+  GetKind(): string {
+    const kind = this._spec?.metadata.kind;
+    return typeof kind === "string" ? kind : "";
+  }
+
   /** Applied API schema names from `apiSchemas` (e.g. `PhysicsArticulationRootAPI`). */
   GetAppliedSchemas(): string[] {
     const raw = this._spec?.metadata.apiSchemas;

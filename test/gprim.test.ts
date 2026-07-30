@@ -170,6 +170,8 @@ describe("solid gprim rendering (Cube/Sphere/Cylinder/Capsule/Cone)", () => {
     const robot = await new ThreeUsdRobotLoader({ loadSceneGeometry: true }).parse(GPRIMS);
     const decor = meshByName(robot, "decor")!;
     expect(decor.userData.kind).toBe("scene");
+    // Nested under the group mirroring /World, at its authored local transform.
+    expect(decor.parent?.userData.primPath).toBe("/World");
     const p = new THREE.Vector3().setFromMatrixPosition(decor.matrix);
     expect([p.x, p.y, p.z]).toEqual([3, 0, 0]);
     expectBox(bbox(decor), 0.5, 0.5, 0.5);

@@ -1,9 +1,11 @@
 /**
  * Click-to-select + transform gizmo for whole objects.
  *
- * A click picks the *unit* the hit mesh belongs to — the direct child of the
- * loaded root: the articulated robot's root link (so the robot moves as one
- * rigid body, no FK involved), an isolated free body, or a scenery mesh. The
+ * A click picks the *unit* the hit mesh belongs to. By default that is the
+ * direct child of the loaded root — the articulated robot's root link (so the
+ * robot moves as one rigid body, no FK involved), an isolated free body, or a
+ * scenery subtree. Pass `resolveUnit` to choose differently (the inspector
+ * example resolves scenery to its nearest `kind = "component"` group). The
  * unit gets a `TransformControls` gizmo and a bounding-box highlight.
  */
 
@@ -32,6 +34,8 @@ export type SelectionGizmoOptions = {
   orbit: { enabled: boolean };
   /** Object whose direct children are the selectable units. */
   getRoot: () => THREE.Object3D | null;
+  /** Maps a hit mesh to its movable unit; defaults to the direct child of root. */
+  resolveUnit?: (hit: THREE.Object3D, root: THREE.Object3D) => THREE.Object3D | null;
   /** Fired on viewport picks only: the unit and the exact mesh hit. */
   onPick?: (unit: THREE.Object3D | null, hit: THREE.Object3D | null) => void;
 };
@@ -106,7 +110,7 @@ export function createSelectionGizmo(options: SelectionGizmoOptions): SelectionG
         (i) => (i.object as THREE.Mesh).isMesh && isShown(i.object, root),
       )?.object;
 
-    const unit = hit ? unitOf(hit, root) : null;
+    const unit = hit ? (options.resolveUnit ?? unitOf)(hit, root) : null;
     select(unit);
     options.onPick?.(unit, hit ?? null);
   }

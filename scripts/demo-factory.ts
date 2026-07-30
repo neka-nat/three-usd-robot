@@ -954,7 +954,9 @@ function propPrim(prop: Prop): PrimSpec {
     specifier: "def",
     typeName: "Xform",
     name: prop.name,
-    metadata: apiSchemas.length ? { apiSchemas } : {},
+    // Each prop is one model-hierarchy component: viewers (and this package's
+    // inspector example) treat it as a single selectable/movable unit.
+    metadata: { kind: "component", ...(apiSchemas.length ? { apiSchemas } : {}) },
     properties,
     children,
     line: 0,
@@ -1199,7 +1201,7 @@ const environment: PrimSpec = {
   specifier: "def",
   typeName: "Xform",
   name: "Environment",
-  metadata: {},
+  metadata: { kind: "group" },
   properties: [],
   children: [looksPrim(), ...props.map(propPrim)],
   line: 0,

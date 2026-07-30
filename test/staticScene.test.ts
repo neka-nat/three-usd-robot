@@ -114,6 +114,23 @@ describe("pure static scenes (no articulation)", () => {
     expect(p.z).toBeCloseTo(-0.2, 6);
   });
 
+  it("mirrors the authored grouping so scenery moves as one subtree", async () => {
+    const robot = await new ThreeUsdRobotLoader().parse(STATIC);
+    const factory = robot.children.find((c) => c.userData.primPath === "/Factory");
+    expect(factory?.userData.kind).toBe("scene");
+    const rack = factory!.children.find((c) => c.userData.primPath === "/Factory/rack")!;
+    expect(rack.children.map((c) => c.name)).toEqual(["frame"]);
+
+    // Translating the group carries its members: stage (10,20,0) → (110,20,0),
+    // normalized by metersPerUnit 0.01 and the Z-up → Y-up root conversion.
+    rack.matrix.multiply(new THREE.Matrix4().makeTranslation(100, 0, 0));
+    robot.updateMatrixWorld(true);
+    const p = new THREE.Vector3().setFromMatrixPosition(rack.children[0]!.matrixWorld);
+    expect(p.x).toBeCloseTo(1.1, 6);
+    expect(p.y).toBeCloseTo(0, 6);
+    expect(p.z).toBeCloseTo(-0.2, 6);
+  });
+
   it("emits a diagnostic when auto-enabling scene geometry", async () => {
     const warnings: string[] = [];
     await new ThreeUsdRobotLoader({ onWarn: (m) => warnings.push(m) }).parse(STATIC);

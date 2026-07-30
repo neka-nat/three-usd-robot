@@ -74,6 +74,24 @@ describe("metadata arc-list parsing", () => {
     const file = parseUsda('def Xform "X" (\n  prepend apiSchemas = ["A", "B"]\n)\n{\n}');
     expect(file.prims[0]?.metadata.apiSchemas).toEqual(["A", "B"]);
   });
+
+  it("GetKind reads the model-hierarchy kind, empty when unauthored", () => {
+    const stage = Stage.OpenFromString(
+      `#usda 1.0
+def Xform "Env" (kind = "group")
+{
+    def Xform "pallet" (kind = "component")
+    {
+        def Mesh "board"
+        {
+        }
+    }
+}`,
+    );
+    expect(stage.GetPrimAtPath("/Env")?.GetKind()).toBe("group");
+    expect(stage.GetPrimAtPath("/Env/pallet")?.GetKind()).toBe("component");
+    expect(stage.GetPrimAtPath("/Env/pallet/board")?.GetKind()).toBe("");
+  });
 });
 
 describe("composeLayer — references", () => {

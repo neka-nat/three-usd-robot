@@ -384,10 +384,16 @@ def Xform "cell"
     }).parse(CELL);
     const scenery = withScene.children.filter((c) => c.userData.kind === "scene");
 
-    // The visual mesh rides along at its authored place; the collider twin and
-    // the link's own mesh do not.
-    expect(scenery.map((c) => c.userData.primPath)).toEqual(["/cell/Scenery/floor"]);
-    expect([...scenery[0]!.matrix.elements.slice(12, 15)]).toEqual([2, 3, 0]);
+    // The authored grouping is mirrored (groups for /cell and /cell/Scenery);
+    // the transform lives on the Scenery group, the mesh sits at identity.
+    // The collider twin and the link's own mesh do not ride along.
+    expect(scenery.map((c) => c.userData.primPath)).toEqual(["/cell"]);
+    const group = scenery[0]!.children[0]!;
+    expect(group.userData.primPath).toBe("/cell/Scenery");
+    expect([...group.matrix.elements.slice(12, 15)]).toEqual([2, 3, 0]);
+    const members = group.children;
+    expect(members.map((c) => c.userData.primPath)).toEqual(["/cell/Scenery/floor"]);
+    expect([...members[0]!.matrix.elements.slice(12, 15)]).toEqual([0, 0, 0]);
   });
 });
 

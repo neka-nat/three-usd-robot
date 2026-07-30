@@ -132,6 +132,7 @@ const selection = createSelectionGizmo({
   domElement: renderer.domElement,
   orbit: controls,
   getRoot: () => robot,
+  resolveUnit: unitForHit,
   onPick: (unit, hit) => {
     // Reveal the exact mesh prim when one was hit, else the unit's link prim.
     const path =
@@ -149,16 +150,38 @@ function unitOf(obj: THREE.Object3D): THREE.Object3D | null {
   return cur.parent === robot ? cur : null;
 }
 
-/** Tree selection → movable unit: exact link or mesh prims only. */
+/**
+ * Viewport pick → movable unit. Robot geometry always resolves to the whole
+ * articulation (one rigid unit, no FK). Scenery resolves to its enclosing
+ * `kind = "component"` group — the USD model hierarchy, so a pallet moves with
+ * its cartons — or to the exact mesh in "mesh" pick mode / unkinded stages.
+ */
+function unitForHit(hit: THREE.Object3D, root: THREE.Object3D): THREE.Object3D | null {
+  if (hit.userData.kind === "scene") {
+    if (gizmoState.pick === "component") {
+      for (let cur: THREE.Object3D | null = hit; cur && cur !== root; cur = cur.parent) {
+        const path = cur.userData.primPath as string | undefined;
+        if (path && robot?.stage?.GetPrimAtPath(path)?.GetKind() === "component") return cur;
+      }
+    }
+    return hit;
+  }
+  return unitOf(hit);
+}
+
+/** Tree selection → the clicked prim's subtree (links → the whole robot). */
 function objectForPrim(path: string): THREE.Object3D | null {
   if (!robot) return null;
   const link = robot.getLinkObjectsByPath().get(path);
   if (link) return unitOf(link);
-  let mesh: THREE.Object3D | null = null;
+  let obj: THREE.Object3D | null = null;
   robot.traverse((o) => {
-    if (!mesh && o.userData.primPath === path) mesh = o;
+    if (!obj && o.userData.primPath === path) obj = o;
   });
-  return mesh ? unitOf(mesh) : null;
+  if (!obj) return null;
+  // Scene groups/meshes move as exactly what was clicked; a robot's visual or
+  // collision mesh must not leave its link, so take the whole robot instead.
+  return (obj as THREE.Object3D).userData.kind === "scene" ? obj : unitOf(obj);
 }
 
 function deselect() {
@@ -166,7 +189,11 @@ function deselect() {
   treePanel?.select(null);
 }
 
-const gizmoState = { mode: "translate" as GizmoMode, space: "world" as "world" | "local" };
+const gizmoState = {
+  mode: "translate" as GizmoMode,
+  space: "world" as "world" | "local",
+  pick: "component" as "component" | "mesh",
+};
 const gizmoFolder = gui.addFolder("Gizmo");
 const modeCtrl = gizmoFolder
   .add(gizmoState, "mode", ["translate", "rotate", "scale"])
@@ -174,6 +201,7 @@ const modeCtrl = gizmoFolder
 gizmoFolder
   .add(gizmoState, "space", ["world", "local"])
   .onChange((space: "world" | "local") => selection.setSpace(space));
+gizmoFolder.add(gizmoState, "pick", ["component", "mesh"]);
 gizmoFolder.add({ deselect }, "deselect").name("deselect (Esc)");
 
 window.addEventListener("keydown", (event) => {
