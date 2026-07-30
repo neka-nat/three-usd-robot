@@ -23,8 +23,13 @@ import {
 import { COLLISION_API } from "../schemas/usdPhysics.js";
 import type { Prim } from "../usd/Prim.js";
 import type { Stage } from "../usd/Stage.js";
+import type { MdlModuleProvider } from "../usd/mdl/parseMdl.js";
 import { computeLocalTransform } from "../usd/xformOps.js";
-import { type ResolvedTexture, resolveBoundMaterial } from "./MaterialBinding.js";
+import {
+  type ResolveMaterialOptions,
+  type ResolvedTexture,
+  resolveBoundMaterial,
+} from "./MaterialBinding.js";
 import type { TextureProvider } from "./TextureBinding.js";
 import type { ThreeUsdRobot } from "./ThreeUsdRobot.js";
 
@@ -41,6 +46,8 @@ export type BindMeshesOptions = {
   curveTubes?: boolean;
   /** Receives fidelity diagnostics (channel-packing mismatches, M19). */
   onWarn?: (message: string) => void;
+  /** Parsed `.mdl` modules for MDL material family/value resolution (M20). */
+  mdl?: MdlModuleProvider;
 };
 
 /** Interpolation domain of a resolved primvar (UsdGeom tokens; `varying` ⇒ `vertex`). */
@@ -418,6 +425,8 @@ export type BuildGprimOptions = {
   curveTubes?: boolean;
   /** Receives fidelity diagnostics (channel-packing mismatches, M19). */
   onWarn?: (message: string) => void;
+  /** Parsed `.mdl` modules for MDL material family/value resolution (M20). */
+  mdl?: MdlModuleProvider;
 };
 
 /**
@@ -435,15 +444,15 @@ export function buildGprimObject(
 ): THREE.Object3D | null {
   switch (prim.GetTypeName()) {
     case "Points":
-      return buildPointsObject(prim, stage);
+      return buildPointsObject(prim, stage, options.mdl);
     case "BasisCurves":
-      return buildBasisCurvesObject(prim, stage, options.curveTubes ?? false);
+      return buildBasisCurvesObject(prim, stage, options.curveTubes ?? false, options.mdl);
     default: {
       const geometry = buildGprimGeometry(prim);
       if (!geometry) return null;
       return new THREE.Mesh(
         geometry,
-        buildMeshMaterials(prim, stage, options.textureProvider, options.onWarn),
+        buildMeshMaterials(prim, stage, options.textureProvider, options.onWarn, options.mdl),
       );
     }
   }
@@ -456,9 +465,10 @@ export function buildGprimObject(
 function resolveFlatColor(
   prim: Prim,
   stage?: Stage,
+  mdl?: MdlModuleProvider,
 ): { color: THREE.Color; opacity: number; name?: string } {
   const color = new THREE.Color(DEFAULT_COLOR);
-  const bound = stage ? resolveBoundMaterial(stage, prim) : undefined;
+  const bound = stage ? resolveBoundMaterial(stage, prim, mdl ? { mdl } : {}) : undefined;
   if (bound?.color) {
     color.setRGB(bound.color[0], bound.color[1], bound.color[2]);
   } else {
@@ -488,14 +498,18 @@ function meanWidth(prim: Prim): number | undefined {
  * `PointsMaterial`, so their mean becomes the world-space point size. Without
  * widths, points draw as fixed 3-px dots.
  */
-function buildPointsObject(prim: Prim, stage?: Stage): THREE.Points | null {
+function buildPointsObject(
+  prim: Prim,
+  stage?: Stage,
+  mdl?: MdlModuleProvider,
+): THREE.Points | null {
   const points = prim.GetAttribute("points").Get();
   if (!isVec3Array(points) || points.length === 0) return null;
 
   const geometry = new THREE.BufferGeometry();
   geometry.setAttribute("position", new THREE.Float32BufferAttribute(flat3(points), 3));
 
-  const flat = resolveFlatColor(prim, stage);
+  const flat = resolveFlatColor(prim, stage, mdl);
   const material = new THREE.PointsMaterial({ color: flat.color });
   if (flat.opacity < 1) {
     material.transparent = true;
@@ -618,6 +632,7 @@ function buildBasisCurvesObject(
   prim: Prim,
   stage: Stage | undefined,
   curveTubes: boolean,
+  mdl?: MdlModuleProvider,
 ): THREE.Object3D | null {
   const points = prim.GetAttribute("points").Get();
   const counts = prim.GetAttribute("curveVertexCounts").Get();
@@ -627,7 +642,7 @@ function buildBasisCurvesObject(
   const basisName = prim.GetAttribute("basis").Get() ?? "bezier";
   const periodic = prim.GetAttribute("wrap").Get() === "periodic";
 
-  const flat = resolveFlatColor(prim, stage);
+  const flat = resolveFlatColor(prim, stage, mdl);
   const width = meanWidth(prim);
   const asTubes = curveTubes && width !== undefined && width > 0;
 
@@ -703,12 +718,20 @@ export function buildMeshMaterial(
   bindingPrim?: Prim,
   /** Receives fidelity diagnostics (channel-packing mismatches, M19). */
   onWarn?: (message: string) => void,
+  /** Parsed `.mdl` modules for MDL material family/value resolution (M20). */
+  mdl?: MdlModuleProvider,
 ): THREE.Material {
   const color = new THREE.Color(DEFAULT_COLOR);
   let opacity = 1;
   let vertexColors = false;
 
-  const bound = stage ? resolveBoundMaterial(stage, bindingPrim ?? meshPrim) : undefined;
+  const resolveOptions: ResolveMaterialOptions = {
+    ...(mdl ? { mdl } : {}),
+    ...(onWarn ? { onWarn } : {}),
+  };
+  const bound = stage
+    ? resolveBoundMaterial(stage, bindingPrim ?? meshPrim, resolveOptions)
+    : undefined;
   if (bound?.color) {
     color.setRGB(bound.color[0], bound.color[1], bound.color[2]);
   } else {
@@ -824,14 +847,16 @@ export function buildMeshMaterial(
     ...(emissiveMap ? { emissiveMap } : {}),
   };
 
-  // UsdPreviewSurface physical inputs promote the material (M19); plain
-  // assets keep getting the cheaper MeshStandardMaterial.
+  // UsdPreviewSurface / Omni-MDL physical inputs promote the material (M19 /
+  // M20); plain assets keep getting the cheaper MeshStandardMaterial.
   const physical =
     bound !== undefined &&
     (bound.ior !== undefined ||
       bound.clearcoat !== undefined ||
       bound.clearcoatRoughness !== undefined ||
-      bound.specularColor !== undefined);
+      bound.specularColor !== undefined ||
+      bound.transmission !== undefined ||
+      bound.clearcoatNormalTexture !== undefined);
   const material = physical
     ? new THREE.MeshPhysicalMaterial(params)
     : new THREE.MeshStandardMaterial(params);
@@ -847,6 +872,11 @@ export function buildMeshMaterial(
         bound.specularColor[2],
       );
     }
+    // OmniGlass (M20): a transmissive dielectric with a refraction volume.
+    if (bound.transmission !== undefined) material.transmission = bound.transmission;
+    if (bound.thickness !== undefined) material.thickness = bound.thickness;
+    const clearcoatNormalMap = tex(bound.clearcoatNormalTexture, "linear");
+    if (clearcoatNormalMap) material.clearcoatNormalMap = clearcoatNormalMap;
   }
   if (bound?.emissiveIntensity !== undefined) material.emissiveIntensity = bound.emissiveIntensity;
   // UsdPreviewSurface normal maps author scale (2,2,2,1) / bias (−1,−1,−1,0)
@@ -877,6 +907,7 @@ export function bindRobotMeshes(
     ...(options.textureProvider ? { textureProvider: options.textureProvider } : {}),
     ...(options.curveTubes ? { curveTubes: true } : {}),
     ...(options.onWarn ? { onWarn: options.onWarn } : {}),
+    ...(options.mdl ? { mdl: options.mdl } : {}),
   };
 
   for (const [key, link] of Object.entries(desc.links)) {
@@ -918,6 +949,7 @@ export function bindSceneMeshes(
     textureProvider?: TextureProvider;
     curveTubes?: boolean;
     onWarn?: (message: string) => void;
+    mdl?: MdlModuleProvider;
   } = {},
 ): number {
   const owned = new Set<string>();
@@ -950,6 +982,7 @@ export function bindSceneMeshes(
     ...(options.textureProvider ? { textureProvider: options.textureProvider } : {}),
     ...(options.curveTubes ? { curveTubes: true } : {}),
     ...(options.onWarn ? { onWarn: options.onWarn } : {}),
+    ...(options.mdl ? { mdl: options.mdl } : {}),
   };
 
   let attached = 0;
@@ -989,12 +1022,14 @@ export function buildMeshMaterials(
   stage?: Stage,
   textures?: TextureProvider,
   onWarn?: (message: string) => void,
+  mdl?: MdlModuleProvider,
 ): THREE.Material | THREE.Material[] {
   const subsets = stage ? getMaterialSubsets(meshPrim) : [];
-  if (subsets.length === 0) return buildMeshMaterial(meshPrim, stage, textures, undefined, onWarn);
+  if (subsets.length === 0)
+    return buildMeshMaterial(meshPrim, stage, textures, undefined, onWarn, mdl);
   return [
-    ...subsets.map((s) => buildMeshMaterial(meshPrim, stage, textures, s.prim, onWarn)),
-    buildMeshMaterial(meshPrim, stage, textures, undefined, onWarn),
+    ...subsets.map((s) => buildMeshMaterial(meshPrim, stage, textures, s.prim, onWarn, mdl)),
+    buildMeshMaterial(meshPrim, stage, textures, undefined, onWarn, mdl),
   ];
 }
 

@@ -1,0 +1,21 @@
+/* M20 fixture — the wrapper-material shape of per-asset Materials/*.mdl:
+   the whole look lives in the base-call arguments, the USD shader authors
+   no inputs at all. */
+mdl 1.6;
+
+import ::OmniPBR::OmniPBR;
+import ::anno::*;
+import ::tex::gamma_mode;
+
+export material CratePaint(*)
+[[
+    anno::display_name("Crate Paint"),
+    anno::version(1, 0, 0)
+]]
+ = OmniPBR::OmniPBR(
+    diffuse_color_constant: color(0.8f, 0.12f, 0.1f),
+    reflection_roughness_constant: 0.3f,
+    metallic_constant: 1.0f,
+    diffuse_texture: texture_2d("./crate.png", ::tex::gamma_srgb),
+    texture_scale: float2(2.0f)
+);

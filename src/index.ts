@@ -29,6 +29,7 @@ export {
 export {
   type ResolvedMaterial,
   type ResolvedTexture,
+  type ResolveMaterialOptions,
   resolveBoundMaterial,
   type TextureTransform,
   type TextureWrap,

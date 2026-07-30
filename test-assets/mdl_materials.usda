@@ -1,0 +1,83 @@
+#usda 1.0
+(
+    defaultPrim = "World"
+    metersPerUnit = 1
+    upAxis = "Z"
+)
+
+def Xform "World"
+{
+    def Scope "Looks"
+    {
+        def Material "Glass"
+        {
+            token outputs:mdl:surface.connect = </World/Looks/Glass/Shader.outputs:out>
+
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @OmniGlass.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "OmniGlass"
+                float inputs:depth = 0.01
+                float inputs:frosting_roughness = 0.25
+                color3f inputs:glass_color = (0.2, 0.7, 0.9)
+                float inputs:glass_ior = 1.2
+                token outputs:out
+            }
+        }
+
+        def Material "Coated"
+        {
+            token outputs:mdl:surface.connect = </World/Looks/Coated/Shader.outputs:out>
+
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @OmniPBR_ClearCoat.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "OmniPBR_ClearCoat"
+                float inputs:clearcoat_reflection_roughness = 0.15
+                color3f inputs:diffuse_color_constant = (0.5, 0.1, 0.1)
+                float inputs:metallic_constant = 0.9
+                token outputs:out
+            }
+        }
+
+        def Material "Painted"
+        {
+            token outputs:mdl:surface.connect = </World/Looks/Painted/Shader.outputs:out>
+
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @./materials/CratePaint.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "CratePaint"
+                token outputs:out
+            }
+        }
+    }
+
+    def Cube "glass" (
+        prepend apiSchemas = ["MaterialBindingAPI"]
+    )
+    {
+        rel material:binding = </World/Looks/Glass>
+        double size = 0.1
+    }
+
+    def Cube "coated" (
+        prepend apiSchemas = ["MaterialBindingAPI"]
+    )
+    {
+        rel material:binding = </World/Looks/Coated>
+        double size = 0.1
+    }
+
+    def Cube "painted" (
+        prepend apiSchemas = ["MaterialBindingAPI"]
+    )
+    {
+        rel material:binding = </World/Looks/Painted>
+        double size = 0.1
+    }
+}
+

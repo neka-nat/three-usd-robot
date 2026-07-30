@@ -6,13 +6,20 @@
  * emissive inputs plus the **texture** asset paths for the diffuse, normal,
  * roughness, metallic, occlusion and emissive channels. Handles both
  * `UsdPreviewSurface` (constant inputs or a connected `UsdUVTexture` network)
- * and Omniverse `OmniPBR` MDL (direct asset-valued texture inputs such as
- * `inputs:normalmap_texture`).
+ * and the Omniverse MDL material families (M20): `OmniPBR` (and derivatives
+ * such as `OmniPBR_Opacity`), `OmniPBR_ClearCoat`, `OmniGlass`, and an
+ * `OmniSurface(Lite)` constants subset. MDL shaders are identified by
+ * `info:mdl:sourceAsset` / `:subIdentifier`; when the referenced `.mdl` module
+ * text is available (see `loadMdlModules`), parameter values fall back from
+ * authored USD inputs to the module's wrapper arguments and declaration
+ * defaults. Executing MDL remains out of scope.
  */
 
 import { AssetPath, type Vec2, type Vec3 } from "../parser/ast.js";
+import { joinPosix } from "../usd/AssetResolver.js";
 import type { Prim } from "../usd/Prim.js";
 import type { Stage } from "../usd/Stage.js";
+import { type MdlModuleProvider, type MdlValue, isMdlTexture } from "../usd/mdl/parseMdl.js";
 
 /** `UsdUVTexture` wrap mode for one axis (`black` ≈ clamp; three has no border). */
 export type TextureWrap = "repeat" | "clamp" | "mirror" | "black";
@@ -77,6 +84,10 @@ export type ResolvedMaterial = {
   specularColor?: Vec3;
   /** OmniPBR `inputs:emissive_intensity` — multiplies the emissive color. */
   emissiveIntensity?: number;
+  /** OmniGlass — `1` marks a transmissive dielectric (physical promotion, M20). */
+  transmission?: number;
+  /** OmniGlass `inputs:depth` — refraction volume thickness (scene units, M20). */
+  thickness?: number;
   /** Diffuse/albedo texture, if any. */
   colorTexture?: ResolvedTexture;
   /** Opacity / alpha texture (may be the same image as `colorTexture`). */
@@ -91,27 +102,32 @@ export type ResolvedMaterial = {
   occlusionTexture?: ResolvedTexture;
   /** Emissive map, if any. */
   emissiveTexture?: ResolvedTexture;
+  /** OmniPBR_ClearCoat `clearcoat_normalmap_texture` (physical promotion, M20). */
+  clearcoatNormalTexture?: ResolvedTexture;
 };
 
+// Input names below are bare (no `inputs:` prefix) so the same name reaches
+// both the authored USD attribute and the `.mdl` declaration value.
 const DIFFUSE_INPUTS = [
-  "inputs:diffuseColor", // UsdPreviewSurface
-  "inputs:diffuse_color_constant", // OmniPBR
-  "inputs:diffuse_tint",
-  "inputs:base_color",
-  "inputs:baseColor",
+  "diffuseColor", // UsdPreviewSurface
+  "diffuse_color_constant", // OmniPBR
+  "diffuse_tint",
+  "base_color",
+  "baseColor",
 ];
-const OPACITY_INPUTS = ["inputs:opacity", "inputs:opacity_constant"];
-const OPACITY_THRESHOLD_INPUTS = ["inputs:opacityThreshold", "inputs:opacity_threshold"];
-const METALLIC_INPUTS = ["inputs:metallic", "inputs:metallic_constant"];
-const ROUGHNESS_INPUTS = ["inputs:roughness", "inputs:reflection_roughness_constant"];
-const EMISSIVE_INPUTS = ["inputs:emissiveColor", "inputs:emissive_color"];
+const OPACITY_INPUTS = ["opacity", "opacity_constant"];
+const OPACITY_THRESHOLD_INPUTS = ["opacityThreshold", "opacity_threshold"];
+const METALLIC_INPUTS = ["metallic", "metallic_constant"];
+const ROUGHNESS_INPUTS = ["roughness", "reflection_roughness_constant"];
+const EMISSIVE_INPUTS = ["emissiveColor", "emissive_color"];
 
 const SURFACE_OUTPUTS = ["outputs:surface", "outputs:mdl:surface"];
 
 /**
  * Per-channel texture lookup: `surface` names are `UsdPreviewSurface` inputs
  * that connect to a `UsdUVTexture` (we follow the connection to its
- * `inputs:file`); `direct` names are OmniPBR MDL asset-valued texture inputs.
+ * `inputs:file`); `direct` names are OmniPBR-style MDL asset-valued texture
+ * inputs (authored in USD or carried by the `.mdl` declaration).
  */
 type TextureLookup = { surface: string[]; direct: string[] };
 
@@ -120,37 +136,48 @@ const TEXTURE_LOOKUPS: Record<
   TextureLookup
 > = {
   color: {
-    surface: ["inputs:diffuseColor"],
-    direct: ["inputs:diffuse_texture", "inputs:diffuse_color_texture"],
+    surface: ["diffuseColor"],
+    direct: ["diffuse_texture", "diffuse_color_texture", "glass_color_texture"],
   },
   opacity: {
-    surface: ["inputs:opacity"],
-    direct: ["inputs:opacity_texture", "inputs:opacity_color_texture"],
+    surface: ["opacity"],
+    direct: ["opacity_texture", "opacity_color_texture"],
   },
   normal: {
-    surface: ["inputs:normal"],
-    direct: ["inputs:normalmap_texture", "inputs:normal_texture"],
+    surface: ["normal"],
+    direct: ["normalmap_texture", "normal_texture", "normal_map_texture"],
   },
   roughness: {
-    surface: ["inputs:roughness"],
-    direct: ["inputs:reflectionroughness_texture", "inputs:roughness_texture"],
+    surface: ["roughness"],
+    direct: ["reflectionroughness_texture", "roughness_texture"],
   },
   metalness: {
-    surface: ["inputs:metallic"],
-    direct: ["inputs:metallic_texture"],
+    surface: ["metallic"],
+    direct: ["metallic_texture"],
   },
   occlusion: {
-    surface: ["inputs:occlusion"],
-    direct: ["inputs:ao_texture", "inputs:occlusion_texture"],
+    surface: ["occlusion"],
+    direct: ["ao_texture", "occlusion_texture"],
   },
   emissive: {
-    surface: ["inputs:emissiveColor"],
-    direct: ["inputs:emissive_color_texture", "inputs:emissive_mask_texture"],
+    surface: ["emissiveColor"],
+    direct: ["emissive_color_texture", "emissive_mask_texture"],
   },
 };
 
+export type ResolveMaterialOptions = {
+  /** Parsed `.mdl` modules for MDL family detection and value fallback (M20). */
+  mdl?: MdlModuleProvider;
+  /** Receives diagnostics (unknown MDL material families). */
+  onWarn?: (message: string) => void;
+};
+
 /** Resolve the bound material's flat parameters for `prim`, or `undefined`. */
-export function resolveBoundMaterial(stage: Stage, prim: Prim): ResolvedMaterial | undefined {
+export function resolveBoundMaterial(
+  stage: Stage,
+  prim: Prim,
+  options: ResolveMaterialOptions = {},
+): ResolvedMaterial | undefined {
   const materialPath = findBinding(prim);
   if (!materialPath) return undefined;
   const material = stage.GetPrimAtPath(materialPath);
@@ -158,92 +185,329 @@ export function resolveBoundMaterial(stage: Stage, prim: Prim): ResolvedMaterial
   const shader = findSurfaceShader(material);
   if (!shader) return undefined;
 
+  const mdlSource = readMdlShaderSource(shader, options.mdl);
+  if (mdlSource && !mdlSource.family) {
+    options.onWarn?.(
+      `${material.GetPath()}: unknown MDL material "${mdlSource.id}" (${mdlSource.assetPath}); applying the best-effort OmniPBR mapping`,
+    );
+  }
+  const sv: ShaderValues = { shader };
+  if (mdlSource?.values) sv.mdl = mdlSource.values;
+  if (mdlSource) sv.mdlAssetPath = mdlSource.assetPath;
+
   const result: ResolvedMaterial = { name: material.GetName() };
-  const color = firstColor(shader, DIFFUSE_INPUTS);
+  const color = firstColor(sv, DIFFUSE_INPUTS);
   if (color) result.color = color;
-  const opacity = firstNumber(shader, OPACITY_INPUTS);
+  const opacity = firstNumber(sv, OPACITY_INPUTS);
   if (opacity !== undefined) result.opacity = opacity;
-  const opacityThreshold = firstNumber(shader, OPACITY_THRESHOLD_INPUTS);
+  const opacityThreshold = firstNumber(sv, OPACITY_THRESHOLD_INPUTS);
   if (opacityThreshold !== undefined) result.opacityThreshold = opacityThreshold;
-  const metalness = firstNumber(shader, METALLIC_INPUTS);
+  const metalness = firstNumber(sv, METALLIC_INPUTS);
   if (metalness !== undefined) result.metalness = metalness;
-  const roughness = firstNumber(shader, ROUGHNESS_INPUTS);
+  const roughness = firstNumber(sv, ROUGHNESS_INPUTS);
   if (roughness !== undefined) result.roughness = roughness;
 
-  const emissive = firstColor(shader, EMISSIVE_INPUTS);
+  const emissive = firstColor(sv, EMISSIVE_INPUTS);
   // OmniPBR gates emission behind `inputs:enable_emission`; UsdPreviewSurface
   // has no such input (undefined ⇒ honoured).
-  if (emissive && shader.GetAttribute("inputs:enable_emission").Get() !== false) {
+  if (emissive && svBoolean(sv, "enable_emission") !== false) {
     result.emissiveColor = emissive;
-    const intensity = firstNumber(shader, ["inputs:emissive_intensity"]);
+    const intensity = svNumber(sv, "emissive_intensity");
     if (intensity !== undefined) result.emissiveIntensity = intensity;
   }
 
   // UsdPreviewSurface physical inputs — their presence promotes the three
   // material from Standard to Physical.
-  const ior = firstNumber(shader, ["inputs:ior"]);
+  const ior = svNumber(sv, "ior");
   if (ior !== undefined) result.ior = ior;
-  const clearcoat = firstNumber(shader, ["inputs:clearcoat"]);
+  const clearcoat = svNumber(sv, "clearcoat");
   if (clearcoat !== undefined) result.clearcoat = clearcoat;
-  const clearcoatRoughness = firstNumber(shader, ["inputs:clearcoatRoughness"]);
+  const clearcoatRoughness = svNumber(sv, "clearcoatRoughness");
   if (clearcoatRoughness !== undefined) result.clearcoatRoughness = clearcoatRoughness;
-  if (shader.GetAttribute("inputs:useSpecularWorkflow").Get() === 1) {
-    const specular = firstColor(shader, ["inputs:specularColor"]);
+  if (svNumber(sv, "useSpecularWorkflow") === 1) {
+    const specular = svColor(sv, "specularColor");
     if (specular) result.specularColor = specular;
   }
 
-  const colorTex = findTexture(shader, TEXTURE_LOOKUPS.color);
+  const colorTex = findTexture(sv, TEXTURE_LOOKUPS.color);
   if (colorTex !== undefined) result.colorTexture = colorTex;
-  const opacityTex = findTexture(shader, TEXTURE_LOOKUPS.opacity);
+  const opacityTex = findTexture(sv, TEXTURE_LOOKUPS.opacity);
   if (opacityTex !== undefined) result.opacityTexture = opacityTex;
-  const normal = findTexture(shader, TEXTURE_LOOKUPS.normal);
+  const normal = findTexture(sv, TEXTURE_LOOKUPS.normal);
   if (normal !== undefined) result.normalTexture = normal;
-  const roughTex = findTexture(shader, TEXTURE_LOOKUPS.roughness);
+  const roughTex = findTexture(sv, TEXTURE_LOOKUPS.roughness);
   if (roughTex !== undefined) result.roughnessTexture = roughTex;
-  const metalTex = findTexture(shader, TEXTURE_LOOKUPS.metalness);
+  const metalTex = findTexture(sv, TEXTURE_LOOKUPS.metalness);
   if (metalTex !== undefined) result.metalnessTexture = metalTex;
-  const aoTex = findTexture(shader, TEXTURE_LOOKUPS.occlusion);
+  const aoTex = findTexture(sv, TEXTURE_LOOKUPS.occlusion);
   if (aoTex !== undefined) result.occlusionTexture = aoTex;
-  const emissiveTex = findTexture(shader, TEXTURE_LOOKUPS.emissive);
+  const emissiveTex = findTexture(sv, TEXTURE_LOOKUPS.emissive);
   if (emissiveTex !== undefined) result.emissiveTexture = emissiveTex;
 
   // OmniPBR packed ORM: when enabled it replaces the per-channel lookups.
   // Its layout (AO = R, roughness = G, metalness = B) matches what three.js
   // samples, so the channels line up by construction.
-  const ormFile = shader.GetAttribute("inputs:ORM_texture").Get();
-  if (
-    shader.GetAttribute("inputs:enable_ORM_texture").Get() === true &&
-    ormFile instanceof AssetPath &&
-    ormFile.path
-  ) {
-    const transform = mdlTextureTransform(shader);
-    const orm: ResolvedTexture = { path: ormFile.path, ...(transform ? { transform } : {}) };
+  const orm = directTexture(sv, "ORM_texture") ?? mdlValueTexture(sv, "ORM_texture");
+  if (svBoolean(sv, "enable_ORM_texture") === true && orm) {
     result.occlusionTexture = { ...orm, outputChannel: "r" };
     result.roughnessTexture = { ...orm, outputChannel: "g" };
     result.metalnessTexture = { ...orm, outputChannel: "b" };
   }
 
+  // Family-specific parameter names on top of the generic reads (M20).
+  switch (mdlSource?.family) {
+    case "glass":
+      readOmniGlass(sv, result);
+      break;
+    case "clearcoat":
+      readOmniClearCoat(sv, result);
+      break;
+    case "surface":
+      readOmniSurface(sv, result);
+      break;
+    default:
+      break; // "pbr" and unknown families are covered by the generic reads
+  }
+
   return result;
 }
 
+/** Omniverse MDL material family driving the family-specific parameter reads. */
+type OmniMdlFamily = "pbr" | "clearcoat" | "glass" | "surface";
+
+function classifyOmniMdl(name: string | undefined): OmniMdlFamily | undefined {
+  if (!name) return undefined;
+  if (name.startsWith("OmniGlass")) return "glass";
+  if (name.startsWith("OmniPBR_ClearCoat")) return "clearcoat";
+  if (name.startsWith("OmniPBR")) return "pbr"; // OmniPBR_Opacity & co. fall back here
+  if (name.startsWith("OmniSurface")) return "surface";
+  return undefined;
+}
+
+type MdlShaderSource = {
+  /** Authored `info:mdl:sourceAsset` path. */
+  assetPath: string;
+  /** Material name inside the module (`subIdentifier`, else the file stem). */
+  id: string;
+  family?: OmniMdlFamily;
+  /** Declaration defaults overlaid with wrapper-call arguments. */
+  values?: Map<string, MdlValue>;
+};
+
 /**
- * Resolve a channel's texture: an OmniPBR direct asset input takes precedence
- * (path + shader-level MDL UV transform), else follow a `UsdPreviewSurface`
- * input's connection to a `UsdUVTexture` and read its `inputs:file` plus
- * sampler/transform state and the connected output channel.
+ * Identify an MDL shader (`info:mdl:sourceAsset` + `:subIdentifier`) and merge
+ * its `.mdl` declaration values when the module is available. A wrapper
+ * declaration (`export material X(*) = OmniPBR(...)`) also resolves the family
+ * through its base material.
  */
-function findTexture(shader: Prim, lookup: TextureLookup): ResolvedTexture | undefined {
+function readMdlShaderSource(
+  shader: Prim,
+  provider: MdlModuleProvider | undefined,
+): MdlShaderSource | undefined {
+  const asset = shader.GetAttribute("info:mdl:sourceAsset").Get();
+  if (!(asset instanceof AssetPath) || !asset.path) return undefined;
+  const sub = shader.GetAttribute("info:mdl:sourceAsset:subIdentifier").Get();
+  const stem = (asset.path.split("/").pop() ?? "").replace(/\.mdl$/i, "");
+  const id = typeof sub === "string" && sub.length > 0 ? sub : stem;
+  const decl = provider?.(asset.path)?.materials.get(id);
+  const family = classifyOmniMdl(decl?.base) ?? classifyOmniMdl(id) ?? classifyOmniMdl(stem);
+  const source: MdlShaderSource = { assetPath: asset.path, id };
+  if (family) source.family = family;
+  if (decl && (decl.defaults.size > 0 || decl.args.size > 0)) {
+    // Wrapper args beat the declaration's own defaults; authored USD inputs
+    // beat both (enforced by the accessors, which try USD first).
+    source.values = new Map([...decl.defaults, ...decl.args]);
+  }
+  return source;
+}
+
+/**
+ * `OmniGlass` — a transmissive dielectric. Canonical MDL defaults are baked in
+ * (`glass_ior` 1.491, smooth, colorless) so an input-less glass shader still
+ * reads as glass instead of the gray mesh fallback.
+ */
+function readOmniGlass(sv: ShaderValues, result: ResolvedMaterial): void {
+  result.transmission = 1;
+  result.metalness = 0;
+  result.color = svColor(sv, "glass_color") ?? [1, 1, 1];
+  result.ior = svNumber(sv, "glass_ior") ?? 1.491;
+  result.roughness = svNumber(sv, "frosting_roughness") ?? 0;
+  const depth = svNumber(sv, "depth");
+  if (svBoolean(sv, "thin_walled") !== true && depth !== undefined) result.thickness = depth;
+  const cutout = svNumber(sv, "cutout_opacity");
+  if (cutout !== undefined && cutout < 1) result.opacity = cutout;
+}
+
+/**
+ * `OmniPBR_ClearCoat` — OmniPBR plus a lacquer layer. The generic reads cover
+ * the OmniPBR base; this adds three's clearcoat (weight 1 unless explicitly
+ * disabled — the coat's presence is the material's point).
+ */
+function readOmniClearCoat(sv: ShaderValues, result: ResolvedMaterial): void {
+  if (svBoolean(sv, "enable_clearcoat") === false) return;
+  result.clearcoat = 1;
+  const roughness = svNumber(sv, "clearcoat_reflection_roughness");
+  if (roughness !== undefined) result.clearcoatRoughness = roughness;
+  const normal =
+    directTexture(sv, "clearcoat_normalmap_texture") ??
+    mdlValueTexture(sv, "clearcoat_normalmap_texture");
+  if (normal && svBoolean(sv, "enable_clearcoat_normalmap_texture") !== false) {
+    result.clearcoatNormalTexture = normal;
+  }
+}
+
+/**
+ * `OmniSurface` / `OmniSurfaceLite` — constants-only subset of the ~100-input
+ * Standard-Surface-style material. Texture-driven inputs are shader-graph
+ * connections in real assets and stay out of scope; unsupported inputs are
+ * ignored.
+ */
+function readOmniSurface(sv: ShaderValues, result: ResolvedMaterial): void {
+  const color = svColor(sv, "diffuse_reflection_color");
+  if (color) result.color = color;
+  const metalness = svNumber(sv, "metalness");
+  if (metalness !== undefined) result.metalness = metalness;
+  const roughness = svNumber(sv, "specular_reflection_roughness");
+  if (roughness !== undefined) result.roughness = roughness;
+  const ior = svNumber(sv, "specular_reflection_ior");
+  if (ior !== undefined) result.ior = ior;
+  const coat = svNumber(sv, "coat_weight");
+  if (coat !== undefined && coat > 0) {
+    result.clearcoat = coat;
+    const coatRoughness = svNumber(sv, "coat_roughness");
+    if (coatRoughness !== undefined) result.clearcoatRoughness = coatRoughness;
+  }
+  const emissionWeight = svNumber(sv, "emission_weight");
+  const emissionColor = svColor(sv, "emission_color");
+  if (emissionWeight !== undefined && emissionWeight > 0 && emissionColor) {
+    result.emissiveColor = emissionColor;
+    result.emissiveIntensity = emissionWeight;
+  }
+  if (svBoolean(sv, "enable_opacity") === true) {
+    const opacity = svNumber(sv, "geometry_opacity");
+    if (opacity !== undefined) result.opacity = opacity;
+  }
+}
+
+/**
+ * Shader parameter view (M20): each accessor tries the authored USD input
+ * (`inputs:<name>`) first, then the merged `.mdl` declaration values.
+ */
+type ShaderValues = {
+  shader: Prim;
+  mdl?: ReadonlyMap<string, MdlValue>;
+  /** Authored module path — anchors module-relative texture paths. */
+  mdlAssetPath?: string;
+};
+
+function authored(sv: ShaderValues, name: string): unknown {
+  return sv.shader.GetAttribute(`inputs:${name}`).Get();
+}
+
+function asNumber(v: unknown): number | undefined {
+  return typeof v === "number" ? v : undefined;
+}
+
+function asBoolean(v: unknown): boolean | undefined {
+  return typeof v === "boolean" ? v : undefined;
+}
+
+function asVec(v: unknown, length: number): number[] | undefined {
+  if (Array.isArray(v) && v.length >= length && v.every((n) => typeof n === "number")) {
+    return (v as number[]).slice(0, length);
+  }
+  return undefined;
+}
+
+function svNumber(sv: ShaderValues, name: string): number | undefined {
+  return asNumber(authored(sv, name)) ?? asNumber(sv.mdl?.get(name));
+}
+
+function svBoolean(sv: ShaderValues, name: string): boolean | undefined {
+  return asBoolean(authored(sv, name)) ?? asBoolean(sv.mdl?.get(name));
+}
+
+function svColor(sv: ShaderValues, name: string): Vec3 | undefined {
+  const v = asVec(authored(sv, name), 3) ?? asVec(sv.mdl?.get(name), 3);
+  return v ? (v as Vec3) : undefined;
+}
+
+function svVec2(sv: ShaderValues, name: string): Vec2 | undefined {
+  const v = asVec(authored(sv, name), 2) ?? asVec(sv.mdl?.get(name), 2);
+  return v ? (v as Vec2) : undefined;
+}
+
+/** First authored value across `names`, then the first `.mdl` value. */
+function firstNumber(sv: ShaderValues, names: string[]): number | undefined {
+  for (const name of names) {
+    const v = asNumber(authored(sv, name));
+    if (v !== undefined) return v;
+  }
+  for (const name of names) {
+    const v = asNumber(sv.mdl?.get(name));
+    if (v !== undefined) return v;
+  }
+  return undefined;
+}
+
+function firstColor(sv: ShaderValues, names: string[]): Vec3 | undefined {
+  for (const name of names) {
+    const v = asVec(authored(sv, name), 3);
+    if (v) return v as Vec3;
+  }
+  for (const name of names) {
+    const v = asVec(sv.mdl?.get(name), 3);
+    if (v) return v as Vec3;
+  }
+  return undefined;
+}
+
+/** An authored direct asset input (`inputs:<name> = @path@`) as a texture. */
+function directTexture(sv: ShaderValues, name: string): ResolvedTexture | undefined {
+  const v = authored(sv, name);
+  if (v instanceof AssetPath && v.path) return withMdlTransform(sv, { path: v.path });
+  return undefined;
+}
+
+/** A `texture_2d` literal from the `.mdl` declaration as a texture. */
+function mdlValueTexture(sv: ShaderValues, name: string): ResolvedTexture | undefined {
+  const v = sv.mdl?.get(name);
+  if (!isMdlTexture(v)) return undefined;
+  const texture: ResolvedTexture = { path: resolveMdlRelative(sv.mdlAssetPath, v.assetPath) };
+  if (v.sourceColorSpace) texture.sourceColorSpace = v.sourceColorSpace;
+  return withMdlTransform(sv, texture);
+}
+
+/**
+ * Texture paths inside a `.mdl` file are relative to the **module**, not the
+ * USD layer — rebase them onto the module's authored path so the texture
+ * provider (which resolves against the layer) finds them.
+ */
+function resolveMdlRelative(modulePath: string | undefined, path: string): string {
+  if (!modulePath || path.startsWith("/") || /^[a-z][a-z0-9+.-]*:/i.test(path)) return path;
+  return joinPosix(modulePath, path);
+}
+
+function withMdlTransform(sv: ShaderValues, texture: ResolvedTexture): ResolvedTexture {
+  const transform = mdlTextureTransform(sv);
+  return transform ? { ...texture, transform } : texture;
+}
+
+/**
+ * Resolve a channel's texture, in authoring-strength order: an authored
+ * OmniPBR direct asset input, then a `UsdPreviewSurface` input's connection to
+ * a `UsdUVTexture` (path + sampler/transform state + connected output
+ * channel), then a `texture_2d` value from the `.mdl` declaration.
+ */
+function findTexture(sv: ShaderValues, lookup: TextureLookup): ResolvedTexture | undefined {
   for (const name of lookup.direct) {
-    const v = shader.GetAttribute(name).Get();
-    if (v instanceof AssetPath && v.path) {
-      const transform = mdlTextureTransform(shader);
-      return { path: v.path, ...(transform ? { transform } : {}) };
-    }
+    const texture = directTexture(sv, name);
+    if (texture) return texture;
   }
   for (const name of lookup.surface) {
-    const conn = shader.GetAttribute(name).GetConnections()[0];
+    const conn = sv.shader.GetAttribute(`inputs:${name}`).GetConnections()[0];
     if (!conn) continue;
-    const texPrim = shader.GetStage().GetPrimAtPath(conn.split(".")[0]!);
+    const texPrim = sv.shader.GetStage().GetPrimAtPath(conn.split(".")[0] as string);
     if (!texPrim) continue;
     const file = texPrim.GetAttribute("inputs:file").Get();
     if (file instanceof AssetPath && file.path) {
@@ -252,6 +516,10 @@ function findTexture(shader: Prim, lookup: TextureLookup): ResolvedTexture | und
       if (channel) tex.outputChannel = channel;
       return tex;
     }
+  }
+  for (const name of lookup.direct) {
+    const texture = mdlValueTexture(sv, name);
+    if (texture) return texture;
   }
   return undefined;
 }
@@ -276,15 +544,16 @@ function outputChannelOf(connection: string): ResolvedTexture["outputChannel"] |
 /**
  * OmniPBR MDL shader-level UV transform (`inputs:texture_translate` /
  * `texture_rotate` / `texture_scale`) — applies to the shader's textures.
+ * Values may come from authored inputs or the `.mdl` declaration.
  */
-function mdlTextureTransform(shader: Prim): TextureTransform | undefined {
+function mdlTextureTransform(sv: ShaderValues): TextureTransform | undefined {
   const transform: TextureTransform = {};
-  const translation = numArray(shader, "inputs:texture_translate", 2);
-  if (translation) transform.translation = translation as Vec2;
-  const scale = numArray(shader, "inputs:texture_scale", 2);
-  if (scale) transform.scale = scale as Vec2;
-  const rotation = shader.GetAttribute("inputs:texture_rotate").Get();
-  if (typeof rotation === "number") transform.rotation = rotation;
+  const translation = svVec2(sv, "texture_translate");
+  if (translation) transform.translation = translation;
+  const scale = svVec2(sv, "texture_scale");
+  if (scale) transform.scale = scale;
+  const rotation = svNumber(sv, "texture_rotate");
+  if (rotation !== undefined) transform.rotation = rotation;
   return Object.keys(transform).length > 0 ? transform : undefined;
 }
 
@@ -319,7 +588,7 @@ function readUvTexture(texPrim: Prim, path: string): ResolvedTexture {
 function connectedPrim(prim: Prim, input: string): Prim | null {
   const conn = prim.GetAttribute(input).GetConnections()[0];
   if (!conn) return null;
-  return prim.GetStage().GetPrimAtPath(conn.split(".")[0]!);
+  return prim.GetStage().GetPrimAtPath(conn.split(".")[0] as string);
 }
 
 /**
@@ -350,11 +619,7 @@ function readStChain(texPrim: Prim): { transform?: TextureTransform; uvSet?: str
 
 /** Read a numeric attribute as a fixed-length array, or `undefined`. */
 function numArray(prim: Prim, name: string, length: number): number[] | undefined {
-  const v = prim.GetAttribute(name).Get();
-  if (Array.isArray(v) && v.length >= length && v.every((n) => typeof n === "number")) {
-    return (v as number[]).slice(0, length);
-  }
-  return undefined;
+  return asVec(prim.GetAttribute(name).Get(), length);
 }
 
 /**
@@ -386,29 +651,11 @@ function findSurfaceShader(material: Prim): Prim | undefined {
   for (const out of SURFACE_OUTPUTS) {
     const conn = material.GetAttribute(out).GetConnections()[0];
     if (conn) {
-      const shaderPath = conn.split(".")[0]!;
+      const shaderPath = conn.split(".")[0] as string;
       const shader = material.GetStage().GetPrimAtPath(shaderPath);
       if (shader) return shader;
     }
   }
   // Fallback: the first child Shader prim.
   return material.GetChildren().find((c) => c.GetTypeName() === "Shader") ?? undefined;
-}
-
-function firstColor(shader: Prim, names: string[]): Vec3 | undefined {
-  for (const name of names) {
-    const v = shader.GetAttribute(name).Get();
-    if (Array.isArray(v) && v.length >= 3 && v.every((n) => typeof n === "number")) {
-      return [v[0], v[1], v[2]] as Vec3;
-    }
-  }
-  return undefined;
-}
-
-function firstNumber(shader: Prim, names: string[]): number | undefined {
-  for (const name of names) {
-    const v = shader.GetAttribute(name).Get();
-    if (typeof v === "number") return v;
-  }
-  return undefined;
 }

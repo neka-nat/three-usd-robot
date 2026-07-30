@@ -27,7 +27,7 @@ exported back to `.usda` / `.usdz` in the browser.
   `Capsule` / `Cone`), point clouds (`Points`) and curves (`BasisCurves`:
   linear / bezier / bspline / catmullRom, periodic wrap, and an opt-in
   `curveTubes` mode that turns authored widths into tube meshes) with
-  `UsdShade` materials (UsdPreviewSurface / OmniPBR) and textures; up-axis
+  `UsdShade` materials (UsdPreviewSurface / Omniverse MDL) and textures; up-axis
   and units normalized automatically. Articulation-free stages load as
   static scenes.
 - **Animation** — plays back time-sampled joint trajectories.
@@ -53,13 +53,28 @@ The CDN is public and CORS-enabled, so this works in the browser too. Try
 FK check, and a re-export to one self-contained file), or open the Vite example
 and pick a robot from the preset list.
 
-Materials target **UsdPreviewSurface fidelity plus an OmniPBR mapping**:
+Materials target **UsdPreviewSurface fidelity plus an Omniverse MDL mapping**:
 constant and textured inputs, faceVarying / indexed UVs, multiple UV sets,
 per-vertex display colors, physical extensions (`ior` / `clearcoat` /
 specular workflow → `MeshPhysicalMaterial`), packed ORM maps,
-`sourceColorSpace`, and purpose/strength-aware bindings. Executing MDL or
-MaterialX shader graphs is out of scope. Not yet supported:
-collection-based material bindings, and the exotic curve schemas
+`sourceColorSpace`, and purpose/strength-aware bindings. MDL shaders are
+identified by `info:mdl:sourceAsset` and mapped **by family** — no shader
+execution — and referenced `.mdl` modules are fetched and parsed for their
+declaration values, so wrapper materials
+(`export material X(*) = OmniPBR(…)`) render correctly even when the USD
+shader authors no inputs at all. Value priority: authored USD inputs >
+wrapper arguments > declaration defaults.
+
+| MDL family | three.js mapping |
+| --- | --- |
+| `OmniPBR` (and derivatives, e.g. `OmniPBR_Opacity`) | color / metalness / roughness / emissive (`emissive_intensity`), per-channel texture maps and packed `ORM_texture`, opacity, normal map, `texture_translate/rotate/scale` |
+| `OmniPBR_ClearCoat` | the OmniPBR mapping plus `clearcoat` / `clearcoatRoughness` / `clearcoatNormalMap` |
+| `OmniGlass` | `MeshPhysicalMaterial` with `transmission` / `ior` (default 1.491) / `roughness` / `thickness`, glass color + texture |
+| `OmniSurface(Lite)` | constants subset: diffuse color / metalness / roughness / IOR / coat / emission / opacity |
+
+Executing MDL or MaterialX shader graphs is out of scope; unknown MDL
+materials fall back to the OmniPBR mapping with a warning. Not yet
+supported: collection-based material bindings, and the exotic curve schemas
 (`NurbsCurves`, `HermiteCurves`, `NurbsPatch`) which load with a warning and
 are skipped.
 

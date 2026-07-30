@@ -15,6 +15,11 @@ work must decode:
   and few-distinct-values lookup table (code 't')
 - `customLayerData` (a crate `Dictionary`)
 
+Also generates test-assets/mdl_materials.{usdc,usda} — the M20 MDL-material
+fixture: OmniGlass / OmniPBR_ClearCoat shaders with authored inputs, plus a
+wrapper-only material (`./materials/CratePaint.mdl`, zero USD inputs) whose
+look must come from the parsed `.mdl` declaration.
+
 Requires pxr (pip install usd-core). Run from the repo root:
     python3 scripts/make-crate-fixtures.py
 """
@@ -23,6 +28,8 @@ from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics, UsdShade, Vt
 
 OUT_USDC = "test-assets/anim_arm.usdc"
 OUT_USDA = "test-assets/anim_arm.usda"
+OUT_MDL_USDC = "test-assets/mdl_materials.usdc"
+OUT_MDL_USDA = "test-assets/mdl_materials.usda"
 
 
 def build(stage: Usd.Stage) -> None:
@@ -111,14 +118,64 @@ def build(stage: Usd.Stage) -> None:
     UsdShade.MaterialBindingAPI.Apply(quad.GetPrim()).Bind(mat)
 
 
+def build_mdl(stage: Usd.Stage) -> None:
+    """M20: MDL shaders (info:mdl:sourceAsset + subIdentifier) in crate form."""
+    UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+    UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+    world = UsdGeom.Xform.Define(stage, "/World")
+    stage.SetDefaultPrim(world.GetPrim())
+    UsdGeom.Scope.Define(stage, "/World/Looks")
+
+    def mdl_material(name, module, sub, inputs):
+        mat = UsdShade.Material.Define(stage, f"/World/Looks/{name}")
+        shader = UsdShade.Shader.Define(stage, f"/World/Looks/{name}/Shader")
+        shader.SetSourceAsset(module, "mdl")
+        shader.SetSourceAssetSubIdentifier(sub, "mdl")
+        shader.CreateOutput("out", Sdf.ValueTypeNames.Token)
+        for input_name, input_type, value in inputs:
+            shader.CreateInput(input_name, input_type).Set(value)
+        mat.CreateSurfaceOutput("mdl").ConnectToSource(shader.ConnectableAPI(), "out")
+        return mat
+
+    glass = mdl_material(
+        "Glass",
+        "OmniGlass.mdl",
+        "OmniGlass",
+        [
+            ("glass_color", Sdf.ValueTypeNames.Color3f, Gf.Vec3f(0.2, 0.7, 0.9)),
+            ("glass_ior", Sdf.ValueTypeNames.Float, 1.2),
+            ("frosting_roughness", Sdf.ValueTypeNames.Float, 0.25),
+            ("depth", Sdf.ValueTypeNames.Float, 0.01),
+        ],
+    )
+    coated = mdl_material(
+        "Coated",
+        "OmniPBR_ClearCoat.mdl",
+        "OmniPBR_ClearCoat",
+        [
+            ("diffuse_color_constant", Sdf.ValueTypeNames.Color3f, Gf.Vec3f(0.5, 0.1, 0.1)),
+            ("metallic_constant", Sdf.ValueTypeNames.Float, 0.9),
+            ("clearcoat_reflection_roughness", Sdf.ValueTypeNames.Float, 0.15),
+        ],
+    )
+    # Wrapper-only: the look lives entirely in ./materials/CratePaint.mdl.
+    painted = mdl_material("Painted", "./materials/CratePaint.mdl", "CratePaint", [])
+
+    for name, mat in (("glass", glass), ("coated", coated), ("painted", painted)):
+        cube = UsdGeom.Cube.Define(stage, f"/World/{name}")
+        cube.CreateSizeAttr(0.1)
+        UsdShade.MaterialBindingAPI.Apply(cube.GetPrim()).Bind(mat)
+
+
 def main() -> None:
-    stage = Usd.Stage.CreateInMemory()
-    build(stage)
-    layer = stage.GetRootLayer()
-    for path in (OUT_USDC, OUT_USDA):
-        if not layer.Export(path):
-            raise SystemExit(f"failed to export {path}")
-        print(f"wrote {path}")
+    for builder, paths in ((build, (OUT_USDC, OUT_USDA)), (build_mdl, (OUT_MDL_USDC, OUT_MDL_USDA))):
+        stage = Usd.Stage.CreateInMemory()
+        builder(stage)
+        layer = stage.GetRootLayer()
+        for path in paths:
+            if not layer.Export(path):
+                raise SystemExit(f"failed to export {path}")
+            print(f"wrote {path}")
 
 
 if __name__ == "__main__":

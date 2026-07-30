@@ -77,6 +77,19 @@ export {
 } from "./usd/AssetResolver.js";
 export { type BinarySource, toBytes, type UsdSource } from "./usd/bytes.js";
 export { type ComposeOptions, composeFile, composeLayer } from "./usd/composition.js";
+
+// MDL declaration parsing (M20) — family/value fidelity for MDL materials
+export { collectMdlAssetPaths, loadMdlModules } from "./usd/mdl/loadMdlModules.js";
+export {
+  isMdlTexture,
+  type MdlMaterialDecl,
+  type MdlModule,
+  type MdlModuleProvider,
+  type MdlTextureValue,
+  type MdlValue,
+  parseMdl,
+  parseMdlLiteral,
+} from "./usd/mdl/parseMdl.js";
 export { computeWorldTransform } from "./usd/xformOps.js";
 export { isZip, openUsdz, type UsdzPackage } from "./usd/usdz.js";
 export { CrateReader } from "./usd/crate/CrateReader.js";

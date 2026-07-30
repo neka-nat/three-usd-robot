@@ -8,6 +8,7 @@ import { type BinarySource, type UsdSource, toBytes } from "../usd/bytes.js";
 import { composeFile, composeLayer } from "../usd/composition.js";
 import { CrateReader } from "../usd/crate/CrateReader.js";
 import { crateToUsdaFile } from "../usd/crate/toUsdaFile.js";
+import { loadMdlModules } from "../usd/mdl/loadMdlModules.js";
 import { isZip, openUsdz } from "../usd/usdz.js";
 import { bindRobotMeshes, bindSceneMeshes } from "./MeshBinding.js";
 import { createTextureProvider } from "./TextureBinding.js";
@@ -153,7 +154,7 @@ export class ThreeUsdRobotLoader {
     return { stage, baseUrl: pkg.rootEntry, resolver: pkg.resolver };
   }
 
-  private buildFromStage({ stage, baseUrl, resolver }: OpenedStage): ThreeUsdRobot {
+  private async buildFromStage({ stage, baseUrl, resolver }: OpenedStage): Promise<ThreeUsdRobot> {
     const robot = extractRobotDescription(stage, this.extractOptions());
     const tree = buildKinematicTree(robot);
     const robot3d = new ThreeUsdRobot(robot, tree, this.robotOptions());
@@ -176,6 +177,9 @@ export class ThreeUsdRobotLoader {
         (this.options.loadTextures ?? true) ? createTextureProvider(resolver, baseUrl) : undefined;
       const curveTubes = this.options.curveTubes ?? false;
       const onWarn = this.options.onWarn;
+      // Prefetch referenced `.mdl` modules (M20) — wrapper materials often
+      // carry the whole look while the USD shader authors no inputs at all.
+      const mdl = await loadMdlModules(stage, resolver, baseUrl);
       if (loadVisuals || loadCollisions) {
         bindRobotMeshes(stage, robot3d, robot, {
           loadVisuals,
@@ -183,6 +187,7 @@ export class ThreeUsdRobotLoader {
           ...(textureProvider ? { textureProvider } : {}),
           ...(curveTubes ? { curveTubes } : {}),
           ...(onWarn ? { onWarn } : {}),
+          ...(mdl ? { mdl } : {}),
         });
       }
       if (loadScene) {
@@ -190,6 +195,7 @@ export class ThreeUsdRobotLoader {
           ...(textureProvider ? { textureProvider } : {}),
           ...(curveTubes ? { curveTubes } : {}),
           ...(onWarn ? { onWarn } : {}),
+          ...(mdl ? { mdl } : {}),
         });
       }
       this.warnUnsupportedGprims(stage);
