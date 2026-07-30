@@ -139,10 +139,13 @@ export {
 export {
   gatherGprimDescendants,
   gatherMeshDescendants,
+  isBasisCurves,
   isMesh,
+  isPoints,
   isRenderableGprim,
   isScope,
   isSolidGprim,
+  isUnsupportedGprim,
   isXform,
   iterDescendants,
 } from "./schemas/usdGeom.js";

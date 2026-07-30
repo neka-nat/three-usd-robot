@@ -23,10 +23,13 @@ exported back to `.usda` / `.usdz` in the browser.
   instanceable prims are composed for you.
 - **Robots** — links, joints (fixed / revolute / continuous / prismatic), limits,
   drives and the initial pose become a `setJointValue`-able hierarchy.
-- **Rendering** — meshes and solid gprims (`Cube` / `Sphere` / `Cylinder` /
-  `Capsule` / `Cone`) with `UsdShade` materials (UsdPreviewSurface / OmniPBR)
-  and textures; up-axis and units normalized automatically. Articulation-free
-  stages load as static scenes.
+- **Rendering** — meshes, solid gprims (`Cube` / `Sphere` / `Cylinder` /
+  `Capsule` / `Cone`), point clouds (`Points`) and curves (`BasisCurves`:
+  linear / bezier / bspline / catmullRom, periodic wrap, and an opt-in
+  `curveTubes` mode that turns authored widths into tube meshes) with
+  `UsdShade` materials (UsdPreviewSurface / OmniPBR) and textures; up-axis
+  and units normalized automatically. Articulation-free stages load as
+  static scenes.
 - **Animation** — plays back time-sampled joint trajectories.
 - **Export** — write robots and whole cells back to `.usda` / `.usdz`,
   simulation-ready for Isaac Sim.
@@ -50,8 +53,9 @@ The CDN is public and CORS-enabled, so this works in the browser too. Try
 FK check, and a re-export to one self-contained file), or open the Vite example
 and pick a robot from the preset list.
 
-Not yet supported: point/curve gprims (`Points`, `BasisCurves`, …) and full
-material/shader fidelity.
+Not yet supported: full material/shader fidelity (and the exotic curve
+schemas — `NurbsCurves`, `HermiteCurves`, `NurbsPatch` — which load with a
+warning and are skipped).
 
 ## Install
 

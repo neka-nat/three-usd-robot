@@ -1,6 +1,7 @@
 import type { RobotDescription } from "../robot/RobotDescription.js";
 import { extractRobotDescription } from "../robot/RobotExtractor.js";
 import { buildKinematicTree } from "../robot/buildKinematicTree.js";
+import { isUnsupportedGprim } from "../schemas/usdGeom.js";
 import { type AssetResolver, DefaultAssetResolver } from "../usd/AssetResolver.js";
 import { Stage } from "../usd/Stage.js";
 import { type BinarySource, type UsdSource, toBytes } from "../usd/bytes.js";
@@ -28,6 +29,11 @@ export type ThreeUsdRobotLoaderOptions = {
   loadSceneGeometry?: boolean;
   /** Load diffuse textures referenced by materials (default `true`). */
   loadTextures?: boolean;
+  /**
+   * Render `BasisCurves` that author `widths` as tube meshes instead of
+   * 1-px lines (default `false`, M18).
+   */
+  curveTubes?: boolean;
   /**
    * Target world up-axis. Any stage (Y-up or Z-up) is normalized into this
    * convention: `"Y"` for a standard three.js scene (the default behavior),
@@ -168,20 +174,38 @@ export class ThreeUsdRobotLoader {
     if (loadVisuals || loadCollisions || loadScene) {
       const textureProvider =
         (this.options.loadTextures ?? true) ? createTextureProvider(resolver, baseUrl) : undefined;
+      const curveTubes = this.options.curveTubes ?? false;
       if (loadVisuals || loadCollisions) {
         bindRobotMeshes(stage, robot3d, robot, {
           loadVisuals,
           loadCollisions,
           ...(textureProvider ? { textureProvider } : {}),
+          ...(curveTubes ? { curveTubes } : {}),
         });
       }
       if (loadScene) {
         bindSceneMeshes(stage, robot3d, robot, {
           ...(textureProvider ? { textureProvider } : {}),
+          ...(curveTubes ? { curveTubes } : {}),
         });
       }
+      this.warnUnsupportedGprims(stage);
     }
     return robot3d;
+  }
+
+  /** Surface recognized-but-unrenderable gprim schemas instead of silence (M18). */
+  private warnUnsupportedGprims(stage: Stage): void {
+    const firstByType = new Map<string, string>();
+    for (const prim of stage.Traverse()) {
+      const type = prim.GetTypeName();
+      if (isUnsupportedGprim(prim) && !firstByType.has(type)) {
+        firstByType.set(type, prim.GetPath());
+      }
+    }
+    for (const [type, path] of firstByType) {
+      this.options.onWarn?.(`${type} gprims are not supported yet; skipping (e.g. ${path})`);
+    }
   }
 
   private async composeStage(

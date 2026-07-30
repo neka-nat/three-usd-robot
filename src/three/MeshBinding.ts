@@ -37,6 +37,8 @@ export type BindMeshesOptions = {
   loadCollisions?: boolean;
   /** Resolves diffuse texture asset paths to `THREE.Texture` (M-tex). */
   textureProvider?: TextureProvider;
+  /** Render `BasisCurves` with authored `widths` as tube meshes (M18). */
+  curveTubes?: boolean;
 };
 
 /**
@@ -117,6 +119,267 @@ export function buildGprimGeometry(prim: Prim): THREE.BufferGeometry | null {
     default:
       return null;
   }
+}
+
+export type BuildGprimOptions = {
+  /** Resolves texture asset paths for mesh materials. */
+  textureProvider?: TextureProvider;
+  /**
+   * Render `BasisCurves` that author `widths` as tube meshes instead of
+   * 1-px lines (default `false`).
+   */
+  curveTubes?: boolean;
+};
+
+/**
+ * Build a renderable `THREE.Object3D` for any supported gprim (M18):
+ * `Mesh` and the parametric solids become a `THREE.Mesh` (via
+ * {@link buildGprimGeometry} + {@link buildMeshMaterials}), `Points` a
+ * `THREE.Points`, and `BasisCurves` a `THREE.Group` holding one line — or,
+ * with {@link BuildGprimOptions.curveTubes}, one tube mesh — per curve.
+ * Returns `null` for unsupported prim types and degenerate geometry.
+ */
+export function buildGprimObject(
+  prim: Prim,
+  stage?: Stage,
+  options: BuildGprimOptions = {},
+): THREE.Object3D | null {
+  switch (prim.GetTypeName()) {
+    case "Points":
+      return buildPointsObject(prim, stage);
+    case "BasisCurves":
+      return buildBasisCurvesObject(prim, stage, options.curveTubes ?? false);
+    default: {
+      const geometry = buildGprimGeometry(prim);
+      if (!geometry) return null;
+      return new THREE.Mesh(geometry, buildMeshMaterials(prim, stage, options.textureProvider));
+    }
+  }
+}
+
+/**
+ * Flat color/opacity for point/curve materials — the same priority as meshes:
+ * bound `UsdShade` diffuse → constant `primvars:displayColor` → default gray.
+ */
+function resolveFlatColor(
+  prim: Prim,
+  stage?: Stage,
+): { color: THREE.Color; opacity: number; name?: string } {
+  const color = new THREE.Color(DEFAULT_COLOR);
+  const bound = stage ? resolveBoundMaterial(stage, prim) : undefined;
+  if (bound?.color) {
+    color.setRGB(bound.color[0], bound.color[1], bound.color[2]);
+  } else {
+    const displayColor = prim.GetAttribute("primvars:displayColor").Get();
+    if (isVec3Array(displayColor) && displayColor[0]) {
+      color.setRGB(displayColor[0][0], displayColor[0][1], displayColor[0][2]);
+    }
+  }
+  const result: { color: THREE.Color; opacity: number; name?: string } = {
+    color,
+    opacity: bound?.opacity ?? 1,
+  };
+  if (bound?.name) result.name = bound.name;
+  return result;
+}
+
+/** Mean of an authored `widths` array (USD widths are world-space diameters). */
+function meanWidth(prim: Prim): number | undefined {
+  const widths = prim.GetAttribute("widths").Get();
+  if (!isNumberArray(widths) || widths.length === 0) return undefined;
+  return widths.reduce((a, b) => a + b, 0) / widths.length;
+}
+
+/**
+ * `Points` → `THREE.Points`. Per-point `primvars:displayColor` becomes vertex
+ * colors; `widths` (diameters) have no per-point equivalent in
+ * `PointsMaterial`, so their mean becomes the world-space point size. Without
+ * widths, points draw as fixed 3-px dots.
+ */
+function buildPointsObject(prim: Prim, stage?: Stage): THREE.Points | null {
+  const points = prim.GetAttribute("points").Get();
+  if (!isVec3Array(points) || points.length === 0) return null;
+
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute("position", new THREE.Float32BufferAttribute(flat3(points), 3));
+
+  const flat = resolveFlatColor(prim, stage);
+  const material = new THREE.PointsMaterial({ color: flat.color });
+  if (flat.opacity < 1) {
+    material.transparent = true;
+    material.opacity = flat.opacity;
+  }
+  if (flat.name) material.name = flat.name;
+
+  const displayColor = prim.GetAttribute("primvars:displayColor").Get();
+  if (isVec3Array(displayColor) && displayColor.length === points.length && points.length > 1) {
+    geometry.setAttribute("color", new THREE.Float32BufferAttribute(flat3(displayColor), 3));
+    material.vertexColors = true;
+    material.color.set(0xffffff); // let the vertex colors drive
+  }
+
+  const width = meanWidth(prim);
+  if (width !== undefined && width > 0) {
+    material.size = width;
+    material.sizeAttenuation = true;
+  } else {
+    material.size = 3;
+    material.sizeAttenuation = false;
+  }
+  return new THREE.Points(geometry, material);
+}
+
+/** Polyline samples per cubic curve segment. */
+const CURVE_DIVISIONS = 8;
+
+/**
+ * Uniform cubic basis matrices, rows weighting `[t³, t², t, 1]` —
+ * `p(t) = [t³ t² t 1] · M · [P0 P1 P2 P3]ᵀ` (RenderMan/USD conventions).
+ */
+const CUBIC_BASES: Record<string, { m: number[][]; vstep: number }> = {
+  // biome-ignore format: keep matrix layout readable
+  bezier: {
+    m: [
+      [-1, 3, -3, 1],
+      [3, -6, 3, 0],
+      [-3, 3, 0, 0],
+      [1, 0, 0, 0],
+    ],
+    vstep: 3,
+  },
+  // biome-ignore format: keep matrix layout readable
+  bspline: {
+    m: [
+      [-1 / 6, 3 / 6, -3 / 6, 1 / 6],
+      [3 / 6, -6 / 6, 3 / 6, 0],
+      [-3 / 6, 0, 3 / 6, 0],
+      [1 / 6, 4 / 6, 1 / 6, 0],
+    ],
+    vstep: 1,
+  },
+  // biome-ignore format: keep matrix layout readable
+  catmullRom: {
+    m: [
+      [-1 / 2, 3 / 2, -3 / 2, 1 / 2],
+      [2 / 2, -5 / 2, 4 / 2, -1 / 2],
+      [-1 / 2, 0, 1 / 2, 0],
+      [0, 2 / 2, 0, 0],
+    ],
+    vstep: 1,
+  },
+};
+
+/**
+ * Sample one cubic curve into a polyline. Periodic curves wrap their control
+ * points and omit the closing sample (the caller closes with a `LineLoop`);
+ * nonperiodic curves include both endpoints. Returns `null` when there are
+ * too few CVs for a single segment.
+ */
+function sampleCubicCurve(cvs: Vec3[], basisName: string, periodic: boolean): Vec3[] | null {
+  const basis = CUBIC_BASES[basisName] ?? CUBIC_BASES.bezier!;
+  const n = cvs.length;
+  const nseg = periodic ? Math.floor(n / basis.vstep) : Math.floor((n - 4) / basis.vstep) + 1;
+  if (n < 4 || nseg < 1) return null;
+
+  const out: Vec3[] = [];
+  for (let s = 0; s < nseg; s++) {
+    const i0 = s * basis.vstep;
+    const P = [cvs[i0 % n]!, cvs[(i0 + 1) % n]!, cvs[(i0 + 2) % n]!, cvs[(i0 + 3) % n]!];
+    // Segments share boundary points: sample [0, 1) per segment, plus the
+    // final t=1 endpoint only on the last nonperiodic segment.
+    const last = !periodic && s === nseg - 1 ? CURVE_DIVISIONS : CURVE_DIVISIONS - 1;
+    for (let k = 0; k <= last; k++) {
+      const t = k / CURVE_DIVISIONS;
+      const w = [t * t * t, t * t, t, 1];
+      const point: Vec3 = [0, 0, 0];
+      for (let i = 0; i < 4; i++) {
+        let b = 0;
+        for (let j = 0; j < 4; j++) b += w[j]! * basis.m[j]![i]!;
+        point[0] += b * P[i]![0];
+        point[1] += b * P[i]![1];
+        point[2] += b * P[i]![2];
+      }
+      out.push(point);
+    }
+  }
+  return out;
+}
+
+/** A piecewise-linear `CurvePath` through `samples`, for tube tessellation. */
+function polylinePath(samples: Vec3[], closed: boolean): THREE.CurvePath<THREE.Vector3> {
+  const path = new THREE.CurvePath<THREE.Vector3>();
+  const vecs = samples.map(([x, y, z]) => new THREE.Vector3(x, y, z));
+  for (let i = 0; i < vecs.length - 1; i++) path.add(new THREE.LineCurve3(vecs[i]!, vecs[i + 1]!));
+  if (closed) path.add(new THREE.LineCurve3(vecs[vecs.length - 1]!, vecs[0]!));
+  return path;
+}
+
+/**
+ * `BasisCurves` → a `THREE.Group` with one object per curve. `type="linear"`
+ * connects the CVs directly; `type="cubic"` samples the authored `basis`
+ * (`bezier` / `bspline` / `catmullRom`, uniform cubic evaluation) at
+ * {@link CURVE_DIVISIONS} points per segment. `wrap="periodic"` closes each
+ * curve (`THREE.LineLoop`). With `curveTubes` and authored `widths`, curves
+ * tessellate into `TubeGeometry` meshes of radius `mean(widths) / 2` instead.
+ */
+function buildBasisCurvesObject(
+  prim: Prim,
+  stage: Stage | undefined,
+  curveTubes: boolean,
+): THREE.Object3D | null {
+  const points = prim.GetAttribute("points").Get();
+  const counts = prim.GetAttribute("curveVertexCounts").Get();
+  if (!isVec3Array(points) || !isNumberArray(counts) || counts.length === 0) return null;
+
+  const curveType = prim.GetAttribute("type").Get() ?? "cubic";
+  const basisName = prim.GetAttribute("basis").Get() ?? "bezier";
+  const periodic = prim.GetAttribute("wrap").Get() === "periodic";
+
+  const flat = resolveFlatColor(prim, stage);
+  const width = meanWidth(prim);
+  const asTubes = curveTubes && width !== undefined && width > 0;
+
+  const material = asTubes
+    ? new THREE.MeshStandardMaterial({ color: flat.color, roughness: 0.8, metalness: 0.1 })
+    : new THREE.LineBasicMaterial({ color: flat.color });
+  if (flat.opacity < 1) {
+    material.transparent = true;
+    material.opacity = flat.opacity;
+  }
+  if (flat.name) material.name = flat.name;
+
+  const group = new THREE.Group();
+  let offset = 0;
+  for (const count of counts) {
+    const cvs = points.slice(offset, offset + count);
+    offset += count;
+    const samples =
+      curveType === "linear"
+        ? cvs.length >= 2
+          ? cvs
+          : null
+        : sampleCubicCurve(cvs, typeof basisName === "string" ? basisName : "bezier", periodic);
+    if (!samples || samples.length < 2) continue;
+
+    if (asTubes) {
+      const path = polylinePath(samples, periodic);
+      const geometry = new THREE.TubeGeometry(
+        path,
+        Math.max(samples.length, 2),
+        width / 2,
+        8,
+        periodic,
+      );
+      group.add(new THREE.Mesh(geometry, material));
+    } else {
+      const geometry = new THREE.BufferGeometry();
+      geometry.setAttribute("position", new THREE.Float32BufferAttribute(flat3(samples), 3));
+      group.add(
+        periodic ? new THREE.LineLoop(geometry, material) : new THREE.Line(geometry, material),
+      );
+    }
+  }
+  return group.children.length > 0 ? group : null;
 }
 
 function getNumber(prim: Prim, name: string): number | undefined {
@@ -252,7 +515,10 @@ export function bindRobotMeshes(
 ): void {
   const loadVisuals = options.loadVisuals ?? true;
   const loadCollisions = options.loadCollisions ?? false;
-  const textures = options.textureProvider;
+  const gprimOptions: BuildGprimOptions = {
+    ...(options.textureProvider ? { textureProvider: options.textureProvider } : {}),
+    ...(options.curveTubes ? { curveTubes: true } : {}),
+  };
 
   for (const [key, link] of Object.entries(desc.links)) {
     const linkObj = robot3d.getLinkObject(key);
@@ -264,13 +530,13 @@ export function bindRobotMeshes(
 
     if (loadVisuals) {
       for (const meshPath of link.visualPrims) {
-        attachMesh(stage, linkPrim, meshPath, linkObj, "visual", textures);
+        attachGprim(stage, linkPrim, meshPath, linkObj, "visual", gprimOptions);
       }
     }
     if (loadCollisions) {
       for (const meshPath of link.collisionPrims ?? []) {
         if (loadVisuals && visualSet.has(meshPath)) continue;
-        attachMesh(stage, linkPrim, meshPath, linkObj, "collision", textures);
+        attachGprim(stage, linkPrim, meshPath, linkObj, "collision", gprimOptions);
       }
     }
   }
@@ -289,7 +555,7 @@ export function bindSceneMeshes(
   stage: Stage,
   robot3d: ThreeUsdRobot,
   desc: RobotDescription,
-  options: { textureProvider?: TextureProvider } = {},
+  options: { textureProvider?: TextureProvider; curveTubes?: boolean } = {},
 ): number {
   const owned = new Set<string>();
   for (const link of Object.values(desc.links)) {
@@ -317,6 +583,11 @@ export function bindSceneMeshes(
     return node;
   };
 
+  const gprimOptions: BuildGprimOptions = {
+    ...(options.textureProvider ? { textureProvider: options.textureProvider } : {}),
+    ...(options.curveTubes ? { curveTubes: true } : {}),
+  };
+
   let attached = 0;
   for (const prim of stage.Traverse()) {
     if (!isRenderableGprim(prim) || owned.has(prim.GetPath())) continue;
@@ -324,15 +595,14 @@ export function bindSceneMeshes(
     // Skip gprims under a link (already bound relative to their link).
     if ([...owned].some((path) => prim.GetPath().startsWith(`${path}/`))) continue;
 
-    const geometry = buildGprimGeometry(prim);
-    if (!geometry) continue;
-    const mesh = new THREE.Mesh(geometry, buildMeshMaterial(prim, stage, options.textureProvider));
-    mesh.name = prim.GetName();
-    mesh.userData.kind = "scene";
-    mesh.userData.primPath = prim.GetPath();
-    placeAtLocal(mesh, prim);
-    containerFor(prim).add(mesh);
-    nodes.set(prim.GetPath(), mesh);
+    const object = buildGprimObject(prim, stage, gprimOptions);
+    if (!object) continue;
+    object.name = prim.GetName();
+    object.userData.kind = "scene";
+    object.userData.primPath = prim.GetPath();
+    placeAtLocal(object, prim);
+    containerFor(prim).add(object);
+    nodes.set(prim.GetPath(), object);
     attached++;
   }
   return attached;
@@ -363,29 +633,28 @@ export function buildMeshMaterials(
   ];
 }
 
-function attachMesh(
+function attachGprim(
   stage: Stage,
   linkPrim: Prim,
   meshPath: string,
   parent: THREE.Object3D,
   kind: MeshKind,
-  textures: TextureProvider | undefined,
+  options: BuildGprimOptions,
 ): void {
   const meshPrim = stage.GetPrimAtPath(meshPath);
   if (!meshPrim) return;
-  const geometry = buildGprimGeometry(meshPrim);
-  if (!geometry) return;
+  const object = buildGprimObject(meshPrim, stage, options);
+  if (!object) return;
 
-  const mesh = new THREE.Mesh(geometry, buildMeshMaterials(meshPrim, stage, textures));
-  mesh.name = meshPrim.GetName();
-  mesh.userData.kind = kind;
-  mesh.userData.primPath = meshPath;
-  // Collision meshes are loaded hidden; reveal via `robot.showCollision = true`.
-  if (kind === "collision") mesh.visible = false;
-  mesh.matrixAutoUpdate = false;
-  mesh.matrix.fromArray(relativeTransform(linkPrim, meshPrim));
-  mesh.matrixWorldNeedsUpdate = true;
-  parent.add(mesh);
+  object.name = meshPrim.GetName();
+  object.userData.kind = kind;
+  object.userData.primPath = meshPath;
+  // Collision gprims are loaded hidden; reveal via `robot.showCollision = true`.
+  if (kind === "collision") object.visible = false;
+  object.matrixAutoUpdate = false;
+  object.matrix.fromArray(relativeTransform(linkPrim, meshPrim));
+  object.matrixWorldNeedsUpdate = true;
+  parent.add(object);
 }
 
 /** Accumulated local transform from `linkPrim` (exclusive) down to `meshPrim` (inclusive). */

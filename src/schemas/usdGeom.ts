@@ -28,9 +28,34 @@ export function isSolidGprim(prim: Prim): boolean {
   return SOLID_GPRIM_TYPES.has(prim.GetTypeName());
 }
 
-/** True for any gprim the runtime can render: a `Mesh` or a parametric solid. */
+/** True for a `Points` (point cloud) prim. */
+export function isPoints(prim: Prim): boolean {
+  return prim.GetTypeName() === "Points";
+}
+
+/** True for a `BasisCurves` (linear / cubic curve batch) prim. */
+export function isBasisCurves(prim: Prim): boolean {
+  return prim.GetTypeName() === "BasisCurves";
+}
+
+/** Point/curve/patch schemas recognized but not renderable yet (skipped with a warning). */
+const UNSUPPORTED_GPRIM_TYPES: ReadonlySet<string> = new Set([
+  "NurbsCurves",
+  "HermiteCurves",
+  "NurbsPatch",
+]);
+
+/** True for a gprim schema the runtime knows about but cannot render (yet). */
+export function isUnsupportedGprim(prim: Prim): boolean {
+  return UNSUPPORTED_GPRIM_TYPES.has(prim.GetTypeName());
+}
+
+/**
+ * True for any gprim the runtime can render: a `Mesh`, a parametric solid,
+ * a `Points` cloud, or a `BasisCurves` batch.
+ */
 export function isRenderableGprim(prim: Prim): boolean {
-  return isMesh(prim) || isSolidGprim(prim);
+  return isMesh(prim) || isSolidGprim(prim) || isPoints(prim) || isBasisCurves(prim);
 }
 
 /** `UsdGeomImageable.purpose` token; defaults to `"default"`. */
