@@ -117,6 +117,14 @@ export {
   toUsdMatrix,
 } from "./kinematics/transforms.js";
 
+// Joint-relative decomposition (M23) — baked-playback diagnostics & projection
+export {
+  decomposeJointRelative,
+  type JointDofInput,
+  type JointRelativeDecomposition,
+  nearestAngleBranch,
+} from "./kinematics/jointResiduals.js";
+
 // xformOp resolution
 export { computeLocalTransform, parseOpType, type ResolvedXform } from "./usd/xformOps.js";
 

@@ -53,6 +53,12 @@ export type ThreeUsdRobotLoaderOptions = {
   clampJointLimits?: boolean;
   /** Seed joints from drive targets / joint state (M9). */
   applyDriveTargetsAsInitialPose?: boolean;
+  /**
+   * Diagnose {@link ThreeUsdRobot.setLinkTransforms} poses against the joint
+   * constraints and warn once per baked session past tolerance (default
+   * 1 mm anchor / 0.01 rad axis).
+   */
+  debugBakedTransforms?: ThreeUsdRobotOptions["debugBakedTransforms"];
   /** Override the robot name. */
   robotName?: string;
   /** Receives non-fatal load diagnostics. */
@@ -255,6 +261,9 @@ export class ThreeUsdRobotLoader {
       ...(this.options.unitScale !== undefined ? { unitScale: this.options.unitScale } : {}),
       ...(this.options.applyDriveTargetsAsInitialPose !== undefined
         ? { applyInitialPose: this.options.applyDriveTargetsAsInitialPose }
+        : {}),
+      ...(this.options.debugBakedTransforms !== undefined
+        ? { debugBakedTransforms: this.options.debugBakedTransforms }
         : {}),
     };
   }

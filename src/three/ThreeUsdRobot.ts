@@ -1,6 +1,11 @@
 import * as THREE from "three";
+import {
+  type JointRelativeDecomposition,
+  decomposeJointRelative,
+  nearestAngleBranch,
+} from "../kinematics/jointResiduals.js";
 import { interpolate } from "../kinematics/sampling.js";
-import { type Mat4, invert, multiply } from "../kinematics/transforms.js";
+import { type Mat4, identity4, invert, multiply, multiplyAll } from "../kinematics/transforms.js";
 import type {
   JointDescription,
   LinkDescription,
@@ -37,6 +42,67 @@ export type ThreeUsdRobotOptions = {
   unitScale?: number;
   /** Seed joints from their authored initial value (drive target / joint state). Default `true`. */
   applyInitialPose?: boolean;
+  /**
+   * Diagnose {@link ThreeUsdRobot.setLinkTransforms} poses against the joint
+   * constraints and `console.warn` once per baked session when one deviates
+   * beyond tolerance (default 1 mm anchor / 0.01 rad axis). `true` uses the
+   * defaults; pass an object to tune them.
+   */
+  debugBakedTransforms?: boolean | { anchorTolerance?: number; axisTolerance?: number };
+};
+
+/**
+ * A rigid world pose for {@link ThreeUsdRobot.setLinkTransforms} —
+ * `quaternion` in Three.js `[x, y, z, w]` order (USD authors quatf as
+ * `(w, x, y, z)`; reorder when reading recorded USD by hand).
+ */
+export type LinkPose = {
+  position: [number, number, number];
+  quaternion: [number, number, number, number];
+};
+
+/**
+ * Coordinate space of {@link LinkPose} batches. `"world"` (default) is the
+ * Three.js scene world *after* `worldUp` / unit normalization — with
+ * `worldUp: "Z"` you hand in Z-up poses — including any transform on the
+ * robot object itself (which must stay a similarity: uniform scale, no
+ * shear). `"stage"` is the authored USD stage space (before up-axis rotation
+ * and `metersPerUnit` scaling), as prim world transforms are written in the
+ * file.
+ */
+export type LinkPoseSpace = "world" | "stage";
+
+export type LinkPosesOptions = {
+  /** Interpretation of the poses (default `"world"`). */
+  space?: LinkPoseSpace;
+};
+
+export type JointValuesFromLinkTransformsOptions = LinkPosesOptions & {
+  /**
+   * Previous joint values (keyed like the returned `values`): each
+   * revolute/continuous joint picks the 2πk branch of its projection nearest
+   * this, for frame-to-frame continuity past ±π.
+   */
+  previous?: Record<string, number>;
+  /** Clamp `values` to authored limits (default `false` — deviations are reported, not hidden). */
+  clampLimits?: boolean;
+};
+
+/**
+ * Per-joint constraint residual of a link-pose batch, keyed by joint prim
+ * path. The ideal parent→child transform of a joint is a pure motion along
+ * its DOF; whatever the poses leave over splits into `anchorError` /
+ * `axisError` (see {@link ThreeUsdRobot.validateLinkTransforms}).
+ */
+export type JointResidual = {
+  /** Translation residual at the joint anchor, in meters (`metersPerUnit` applied). */
+  anchorError: number;
+  /** Rotation residual off the joint DOF, in radians. */
+  axisError: number;
+  /** Projected joint value (SI: radians / stage length units; `0` for fixed joints). */
+  q: number;
+  /** Whether `q` lies outside the authored limits. */
+  limitExceeded: boolean;
 };
 
 /**
@@ -72,6 +138,18 @@ export class ThreeUsdRobot extends THREE.Object3D {
   private readonly jointKeyByPath = new Map<string, string>();
   private dirty = true;
 
+  /** Constructed (fk rest) local matrix of every link, for baked→fk restore. */
+  private readonly restLocal = new Map<string, Mat4>();
+  private _displayMode: "fk" | "baked" = "fk";
+  /** Stage-space link worlds while baked (`null` in fk mode). */
+  private bakedStageWorld: Map<string, Mat4> | null = null;
+  /** Frozen `frame0 · motion · frame1⁻¹` per tree joint while baked. */
+  private bakedChainRel: Map<string, Mat4> | null = null;
+  private readonly debugBaked: { anchorTolerance: number; axisTolerance: number } | null;
+  private bakedDebugWarned = false;
+  private readonly warnedPoseKeys = new Set<string>();
+  private warnedNonUniformScale = false;
+
   private readonly helperSize: number;
   private _showVisual = true;
   private _showCollision = false;
@@ -102,6 +180,15 @@ export class ThreeUsdRobot extends THREE.Object3D {
     this.attachIsolatedLinks();
     this.applyStageNormalization(robot, options);
     if (options.applyInitialPose ?? true) this.applyInitialPose(robot);
+
+    for (const [key, obj] of this.linkObjects) this.restLocal.set(key, obj.matrix.toArray());
+    const debug = options.debugBakedTransforms;
+    this.debugBaked = debug
+      ? {
+          anchorTolerance: (typeof debug === "object" ? debug.anchorTolerance : undefined) ?? 1e-3,
+          axisTolerance: (typeof debug === "object" ? debug.axisTolerance : undefined) ?? 0.01,
+        }
+      : null;
   }
 
   /** Orient (authored upAxis → target world up) and scale (metersPerUnit × unitScale) the root. */
@@ -215,9 +302,11 @@ export class ThreeUsdRobot extends THREE.Object3D {
 
   /**
    * Set one joint value, addressed by key or full prim path. Unknown joints
-   * are ignored. Returns whether it applied.
+   * are ignored. Returns whether it applied. Always restores `"fk"` display
+   * mode first (see {@link setLinkTransforms}).
    */
   setJointValue(name: string, value: number): boolean {
+    this.exitBakedMode();
     const joint = this.jointObjects.get(this.jointKey(name));
     if (!joint) return false;
     joint.setValue(value, this.clampJointLimits);
@@ -225,8 +314,14 @@ export class ThreeUsdRobot extends THREE.Object3D {
     return true;
   }
 
-  /** Set several joint values at once (matrix update is coalesced). */
+  /**
+   * Set several joint values at once (matrix update is coalesced). Always
+   * restores `"fk"` display mode first, recomputing every link purely from
+   * joint values — even an empty batch returns from baked playback (see
+   * {@link setLinkTransforms}).
+   */
   setJointValues(values: Record<string, number>): void {
+    this.exitBakedMode();
     for (const [name, value] of Object.entries(values)) {
       const joint = this.jointObjects.get(this.jointKey(name));
       if (joint) {
@@ -248,6 +343,333 @@ export class ThreeUsdRobot extends THREE.Object3D {
 
   private ensureUpdated(): void {
     if (this.dirty) this.updateKinematics();
+  }
+
+  // -- Baked link transforms (M23) -----------------------------------------
+
+  /**
+   * `"fk"` (default): link placements derive from joint values. `"baked"`:
+   * {@link setLinkTransforms} wrote link poses directly and the joints no
+   * longer constrain the display; any `setJointValue`-family call restores fk.
+   */
+  get displayMode(): "fk" | "baked" {
+    return this._displayMode;
+  }
+
+  /**
+   * Drive link world poses directly — the display path for baked recordings
+   * (Isaac Sim body-transform time samples, maximal-coordinate playback).
+   * usdview-like semantics: constraint deviations are shown, never corrected —
+   * {@link validateLinkTransforms} measures them,
+   * {@link jointValuesFromLinkTransforms} projects onto the joints instead.
+   *
+   * Enters `"baked"` display mode; joint values stay untouched. Return to fk
+   * with {@link setJointValues} (any batch, even `{}`), which recomputes
+   * every link purely from joint values.
+   *
+   * Keys are link keys or full prim paths; unknown keys warn once and are
+   * skipped. Unspecified links KEEP their current world pose — a track that
+   * omits a link means "it did not move". Poses are rigid, `quaternion` in
+   * `[x, y, z, w]` order, interpreted per `opts.space` (default `"world"`:
+   * the Three.js scene world after `worldUp` normalization — pair a Z-up
+   * meter track with `worldUp: "Z"`). Matrix updates are coalesced into the
+   * next render / world query. Returns the number of poses applied.
+   */
+  setLinkTransforms(poses: Record<string, LinkPose>, opts: LinkPosesOptions = {}): number {
+    const targets = this.resolvePoseTargets(poses, opts.space ?? "world");
+    if (this._displayMode !== "baked") this.enterBakedMode();
+    const current = this.bakedStageWorld ?? new Map<string, Mat4>();
+    const rels = this.bakedChainRel ?? new Map<string, Mat4>();
+
+    // Rewrite every link's local matrix parents-first: written links land on
+    // their target, held links keep their world pose while ancestors move.
+    // The chain nodes in between stay frozen at their fk values; each link's
+    // local absorbs the difference, so world matrices come out exact.
+    const next = new Map<string, Mat4>();
+    for (const key of this.tree.order) {
+      const node = this.tree.nodes[key];
+      const obj = this.linkObjects.get(key);
+      if (!node || !obj) continue;
+      const world = targets.get(key) ?? current.get(key);
+      if (!world) continue;
+      if (node.parent === null || node.jointToParent === null) {
+        next.set(key, world); // the root's Object3D parent is the robot itself
+        setMatrix(obj, world);
+        continue;
+      }
+      const parentWorld = next.get(node.parent);
+      const chainRel = rels.get(node.jointToParent);
+      if (!parentWorld || !chainRel) continue;
+      next.set(key, world);
+      setMatrix(obj, multiply(invert(multiply(parentWorld, chainRel)), world));
+    }
+    for (const key of this.tree.isolatedLinks) {
+      const obj = this.linkObjects.get(key);
+      const world = targets.get(key) ?? current.get(key);
+      if (!obj || !world) continue;
+      next.set(key, world);
+      setMatrix(obj, world);
+    }
+
+    this.bakedStageWorld = next;
+    this.dirty = true;
+    this.warnBakedDeviationOnce(next);
+    return targets.size;
+  }
+
+  /**
+   * Measure how far a link-pose batch deviates from the joint constraints,
+   * without touching the display. Unspecified links resolve to their current
+   * displayed pose, so the report predicts exactly what
+   * {@link setLinkTransforms} with the same batch would show.
+   *
+   * Keyed by joint prim path; covers every joint — fixed joints (`q` = 0
+   * check), loop joints dropped from the fk tree (closure error) and the
+   * world-fixed root attachment (a moved base against a fixed-base model).
+   * Typical signatures: a constant `anchorError` offset on every joint —
+   * recording/model mismatch (wrong version or scale); growth over time —
+   * maximal-coordinate solver drift; large uniform `axisError` — a
+   * coordinate-convention bug (Y/Z-up or quaternion order).
+   */
+  validateLinkTransforms(
+    poses: Record<string, LinkPose>,
+    opts: LinkPosesOptions = {},
+  ): Record<string, JointResidual> {
+    const out: Record<string, JointResidual> = {};
+    for (const { joint, rel } of this.decomposeJoints(poses, opts.space ?? "world")) {
+      out[joint.primPath] = this.buildResidual(joint, rel.q, rel);
+    }
+    return out;
+  }
+
+  /**
+   * Project a link-pose batch onto the joint manifold: the closed-form 1-DOF
+   * joint values that best reproduce it, plus the same residuals as
+   * {@link validateLinkTransforms}. `values` covers the articulated tree
+   * joints, keyed by joint prim path, and feeds {@link setJointValues}
+   * directly — the constraint-respecting playback of the same track:
+   *
+   * ```ts
+   * robot.setJointValues(robot.jointValuesFromLinkTransforms(poses, { previous }).values);
+   * ```
+   *
+   * Residual `q` / `limitExceeded` always report the unclamped projection,
+   * also when `clampLimits` clamps `values`.
+   */
+  jointValuesFromLinkTransforms(
+    poses: Record<string, LinkPose>,
+    opts: JointValuesFromLinkTransformsOptions = {},
+  ): { values: Record<string, number>; residuals: Record<string, JointResidual> } {
+    const values: Record<string, number> = {};
+    const residuals: Record<string, JointResidual> = {};
+    for (const { key, joint, rel } of this.decomposeJoints(poses, opts.space ?? "world")) {
+      let q = rel.q;
+      if (joint.type === "revolute" || joint.type === "continuous") {
+        const previous = opts.previous?.[joint.primPath] ?? opts.previous?.[key];
+        if (previous !== undefined) q = nearestAngleBranch(q, previous);
+      }
+      residuals[joint.primPath] = this.buildResidual(joint, q, rel);
+      if (!this.jointObjects.get(key)?.articulated) continue;
+      if (opts.clampLimits) {
+        if (joint.lower !== undefined && q < joint.lower) q = joint.lower;
+        if (joint.upper !== undefined && q > joint.upper) q = joint.upper;
+      }
+      values[joint.primPath] = q;
+    }
+    return { values, residuals };
+  }
+
+  /** Restore the constructed fk link placements (no-op when already `"fk"`). */
+  private exitBakedMode(): void {
+    if (this._displayMode === "fk") return;
+    for (const [key, local] of this.restLocal) {
+      const obj = this.linkObjects.get(key);
+      if (obj) setMatrix(obj, local);
+    }
+    this.bakedStageWorld = null;
+    this.bakedChainRel = null;
+    this.bakedDebugWarned = false;
+    this._displayMode = "fk";
+    this.dirty = true;
+  }
+
+  /** Freeze the fk state a baked session builds on (joints cannot move while baked). */
+  private enterBakedMode(): void {
+    const rels = this.computeChainRels();
+    this.bakedChainRel = rels;
+    this.bakedStageWorld = this.computeStageWorlds(rels);
+    this._displayMode = "baked";
+  }
+
+  /** `frame0 · motion(q) · frame1⁻¹` of every tree joint, from live joint values. */
+  private computeChainRels(): Map<string, Mat4> {
+    const rels = new Map<string, Mat4>();
+    for (const [key, motion] of this.jointObjects) {
+      const joint = this.robot.joints[key];
+      if (!joint) continue;
+      motion.updateMatrix();
+      rels.set(
+        key,
+        multiplyAll([joint.jointFrame0, motion.matrix.toArray(), invert(joint.jointFrame1)]),
+      );
+    }
+    return rels;
+  }
+
+  /** Stage-space world transform of every link under the current display state. */
+  private computeStageWorlds(rels: Map<string, Mat4>): Map<string, Mat4> {
+    const worlds = new Map<string, Mat4>();
+    for (const key of this.tree.order) {
+      const node = this.tree.nodes[key];
+      const obj = this.linkObjects.get(key);
+      if (!node || !obj) continue;
+      const local = obj.matrix.toArray();
+      if (node.parent === null || node.jointToParent === null) {
+        worlds.set(key, local);
+        continue;
+      }
+      const parentWorld = worlds.get(node.parent);
+      const chainRel = rels.get(node.jointToParent);
+      if (!parentWorld || !chainRel) continue;
+      worlds.set(key, multiplyAll([parentWorld, chainRel, local]));
+    }
+    for (const key of this.tree.isolatedLinks) {
+      const obj = this.linkObjects.get(key);
+      if (obj) worlds.set(key, obj.matrix.toArray());
+    }
+    return worlds;
+  }
+
+  private currentStageWorlds(): Map<string, Mat4> {
+    return this.bakedStageWorld ?? this.computeStageWorlds(this.computeChainRels());
+  }
+
+  /** Resolve pose keys to link keys and convert each pose to a rigid stage-space matrix. */
+  private resolvePoseTargets(
+    poses: Record<string, LinkPose>,
+    space: LinkPoseSpace,
+  ): Map<string, Mat4> {
+    const targets = new Map<string, Mat4>();
+    const entries = Object.entries(poses);
+    if (entries.length === 0) return targets;
+
+    const toStage = space === "world" ? this.sceneToStageConverter() : null;
+    const position = new THREE.Vector3();
+    const quaternion = new THREE.Quaternion();
+    const matrix = new THREE.Matrix4();
+    for (const [ref, pose] of entries) {
+      const key = this.linkKey(ref);
+      if (!this.linkObjects.has(key)) {
+        this.warnUnknownPoseKey(ref);
+        continue;
+      }
+      position.fromArray(pose.position);
+      quaternion.fromArray(pose.quaternion).normalize();
+      toStage?.(position, quaternion);
+      targets.set(key, matrix.compose(position, quaternion, UNIT_SCALE).toArray());
+    }
+    return targets;
+  }
+
+  /**
+   * Scene world → stage space, undoing the robot's own world transform
+   * (up-axis rotation, unit scale, any user placement) as a similarity — so
+   * link locals stay rigid and the root keeps carrying the scale.
+   */
+  private sceneToStageConverter(): (position: THREE.Vector3, quaternion: THREE.Quaternion) => void {
+    this.updateWorldMatrix(true, false);
+    const rootPosition = new THREE.Vector3();
+    const rootQuaternion = new THREE.Quaternion();
+    const rootScale = new THREE.Vector3();
+    this.matrixWorld.decompose(rootPosition, rootQuaternion, rootScale);
+    const s = rootScale.x;
+    if (
+      !this.warnedNonUniformScale &&
+      (Math.abs(rootScale.y - s) > 1e-6 * Math.abs(s) ||
+        Math.abs(rootScale.z - s) > 1e-6 * Math.abs(s))
+    ) {
+      this.warnedNonUniformScale = true;
+      console.warn(
+        `three-usd-robot: non-uniform world scale on "${this.name}"; space:"world" poses are off`,
+      );
+    }
+    const invQuaternion = rootQuaternion.clone().invert();
+    const invScale = s !== 0 ? 1 / s : 1;
+    return (position, quaternion) => {
+      position.sub(rootPosition).applyQuaternion(invQuaternion).multiplyScalar(invScale);
+      quaternion.premultiply(invQuaternion);
+    };
+  }
+
+  /**
+   * Decompose every joint's parent→child transform under a pose batch
+   * (unspecified links resolve to their current displayed pose, mirroring
+   * {@link setLinkTransforms}). Pure — the display is untouched.
+   */
+  private decomposeJoints(
+    poses: Record<string, LinkPose>,
+    space: LinkPoseSpace,
+  ): { key: string; joint: JointDescription; rel: JointRelativeDecomposition }[] {
+    const worlds = new Map(this.currentStageWorlds());
+    for (const [key, world] of this.resolvePoseTargets(poses, space)) worlds.set(key, world);
+
+    const out: { key: string; joint: JointDescription; rel: JointRelativeDecomposition }[] = [];
+    for (const [key, joint] of Object.entries(this.robot.joints)) {
+      const childWorld = worlds.get(joint.child);
+      const parentWorld = joint.parent === "" ? IDENTITY4 : worlds.get(joint.parent);
+      if (!childWorld || !parentWorld) continue;
+      out.push({ key, joint, rel: decomposeJointRelative(joint, parentWorld, childWorld) });
+    }
+    return out;
+  }
+
+  private buildResidual(
+    joint: JointDescription,
+    q: number,
+    rel: JointRelativeDecomposition,
+  ): JointResidual {
+    return {
+      anchorError: rel.anchorError * this.robot.metersPerUnit,
+      axisError: rel.axisError,
+      q,
+      limitExceeded:
+        (joint.lower !== undefined && q < joint.lower - LIMIT_EPS) ||
+        (joint.upper !== undefined && q > joint.upper + LIMIT_EPS),
+    };
+  }
+
+  private warnUnknownPoseKey(ref: string): void {
+    if (this.warnedPoseKeys.has(ref)) return;
+    this.warnedPoseKeys.add(ref);
+    console.warn(`three-usd-robot: unknown link "${ref}" in a pose batch; ignoring`);
+  }
+
+  /** `debugBakedTransforms`: warn once per baked session when poses break the constraints. */
+  private warnBakedDeviationOnce(worlds: Map<string, Mat4>): void {
+    if (!this.debugBaked || this.bakedDebugWarned) return;
+    const { anchorTolerance, axisTolerance } = this.debugBaked;
+    let count = 0;
+    let worst: { path: string; anchor: number; axis: number; score: number } | null = null;
+    for (const joint of Object.values(this.robot.joints)) {
+      const childWorld = worlds.get(joint.child);
+      const parentWorld = joint.parent === "" ? IDENTITY4 : worlds.get(joint.parent);
+      if (!childWorld || !parentWorld) continue;
+      const rel = decomposeJointRelative(joint, parentWorld, childWorld);
+      const anchor = rel.anchorError * this.robot.metersPerUnit;
+      if (anchor <= anchorTolerance && rel.axisError <= axisTolerance) continue;
+      count++;
+      const score = anchor / anchorTolerance + rel.axisError / axisTolerance;
+      if (!worst || score > worst.score) {
+        worst = { path: joint.primPath, anchor, axis: rel.axisError, score };
+      }
+    }
+    if (!worst) return;
+    this.bakedDebugWarned = true;
+    console.warn(
+      `three-usd-robot: baked poses deviate from ${count} joint constraint(s) — worst ` +
+        `${worst.path}: anchor ${(worst.anchor * 1e3).toFixed(3)} mm, axis ` +
+        `${worst.axis.toFixed(4)} rad (recording/model mismatch? warned once per baked session)`,
+    );
   }
 
   // -- Queries -------------------------------------------------------------
@@ -365,8 +787,9 @@ export class ThreeUsdRobot extends THREE.Object3D {
     return null;
   }
 
-  /** Sample every animated joint at time code `t` and apply the values. */
+  /** Sample every animated joint at time code `t` and apply the values (an fk drive — leaves baked mode). */
   setTime(t: number): void {
+    this.exitBakedMode();
     for (const [key, joint] of Object.entries(this.robot.joints)) {
       if (joint.valueSamples) this.setJointValue(key, interpolate(joint.valueSamples, t));
     }
@@ -428,6 +851,11 @@ export class ThreeUsdRobot extends THREE.Object3D {
     });
   }
 }
+
+const UNIT_SCALE = new THREE.Vector3(1, 1, 1);
+const IDENTITY4: Mat4 = identity4();
+/** Slack for `limitExceeded` so poses exactly at a limit round-trip clean. */
+const LIMIT_EPS = 1e-9;
 
 /** Assign a fixed local matrix to an object (disables Three.js auto-update). */
 function setMatrix(obj: THREE.Object3D, m: Mat4): void {

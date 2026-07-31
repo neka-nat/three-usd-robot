@@ -41,6 +41,11 @@ export {
   type TextureProvider,
 } from "./three/TextureBinding.js";
 export {
+  type JointResidual,
+  type JointValuesFromLinkTransformsOptions,
+  type LinkPose,
+  type LinkPosesOptions,
+  type LinkPoseSpace,
   ThreeUsdRobot,
   type ThreeUsdRobotOptions,
   type WorldUpAxis,

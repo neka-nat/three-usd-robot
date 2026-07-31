@@ -30,7 +30,9 @@ exported back to `.usda` / `.usdz` in the browser.
   `UsdShade` materials (UsdPreviewSurface / Omniverse MDL) and textures; up-axis
   and units normalized automatically. Articulation-free stages load as
   static scenes.
-- **Animation** — plays back time-sampled joint trajectories.
+- **Animation** — plays back time-sampled joint trajectories, and replays
+  baked body-transform recordings through `setLinkTransforms` with
+  constraint diagnostics.
 - **Export** — write robots and whole cells back to `.usda` / `.usdz`,
   simulation-ready for Isaac Sim.
 - **React** — declarative `<UsdRobot>` for React Three Fiber.
@@ -226,6 +228,48 @@ if (range) {
   robot.setTime(t); // interpolates every animated joint and updates FK
 }
 ```
+
+### Baked link transforms (recorded playback)
+
+Recordings baked as **body transforms** (Isaac Sim stage-recorder output,
+maximal-coordinate solver playback) can drive link poses directly, bypassing
+the joints — usdview-style display semantics:
+
+```ts
+// A world-pose track keyed by prim path (or link key), quaternion in [x, y, z, w]:
+robot.setLinkTransforms({
+  "/World/link1": { position: [0, 0, 1], quaternion: [0, 0, 0, 1] },
+  "/World/link2": { position: [0.3, 0, 2], quaternion: [0, 0, 0, 1] },
+}); // batched — one matrix update; unlisted links keep their current world pose
+
+robot.displayMode; // "baked": joint values are untouched and no longer place links
+robot.setJointValues(liveValues); // recompute all links from joint values → "fk"
+```
+
+Poses are read in the **three.js scene world after `worldUp` normalization** —
+pair a Z-up meter track (Isaac / ROS convention) with `worldUp: "Z"`; feeding
+it into the default Y-up normalization lays the robot on its side. Transforms
+on the `robot` object itself (placement, uniform scaling) are accounted for,
+and `{ space: "stage" }` reads authored stage coordinates instead.
+
+Constraint deviations — a recording from a different model version, solver
+drift, a coordinate-convention bug — are shown, never silently corrected.
+Measure them, or project onto the joints instead:
+
+```ts
+robot.validateLinkTransforms(poses);
+// { "/World/joint1": { anchorError /* m */, axisError /* rad */, q, limitExceeded }, … }
+// covers every joint: fixed joints, loop joints dropped from the FK tree,
+// and the world-fixed root attachment
+
+const { values, residuals } = robot.jointValuesFromLinkTransforms(poses, {
+  previous: lastValues, // ±π branch continuity, frame to frame
+});
+robot.setJointValues(values); // constraint-respecting playback of the same track
+```
+
+`new ThreeUsdRobotLoader({ debugBakedTransforms: true })` warns once per baked
+session when poses deviate beyond 1 mm / 0.01 rad.
 
 ### React Three Fiber
 
