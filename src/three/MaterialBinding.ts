@@ -13,6 +13,11 @@
  * text is available (see `loadMdlModules`), parameter values fall back from
  * authored USD inputs to the module's wrapper arguments and declaration
  * defaults. Executing MDL remains out of scope.
+ *
+ * MaterialX networks authored natively in UsdShade (M21) resolve here too:
+ * `ND_standard_surface_surfaceshader` has a dedicated reader (see
+ * `MaterialXBinding.ts`), while the `ND_Usd*` compatibility nodes share
+ * `UsdPreviewSurface` input names and reuse the generic reads.
  */
 
 import { AssetPath, type Vec2, type Vec3 } from "../parser/ast.js";
@@ -20,6 +25,11 @@ import { joinPosix } from "../usd/AssetResolver.js";
 import type { Prim } from "../usd/Prim.js";
 import type { Stage } from "../usd/Stage.js";
 import { type MdlModuleProvider, type MdlValue, isMdlTexture } from "../usd/mdl/parseMdl.js";
+import {
+  MTLX_STANDARD_SURFACE,
+  MTLX_USD_PREVIEW_SURFACE,
+  readStandardSurface,
+} from "./MaterialXBinding.js";
 
 /** `UsdUVTexture` wrap mode for one axis (`black` ≈ clamp; three has no border). */
 export type TextureWrap = "repeat" | "clamp" | "mirror" | "black";
@@ -51,6 +61,12 @@ export type ResolvedTexture = {
    * connection to a `UsdPrimvarReader_float2.inputs:varname`. Absent ⇒ `"st"`.
    */
   uvSet?: string;
+  /**
+   * Direct UV channel index (MaterialX `ND_texcoord_*.inputs:index`, M21).
+   * Beats `uvSet`; channel N is the mesh's N-th UV set in `meshUvSetNames`
+   * order (`st` first, extras sorted).
+   */
+  uvChannel?: number;
   /** `inputs:sourceColorSpace` — overrides the per-channel colorspace default. */
   sourceColorSpace?: "raw" | "sRGB" | "auto";
   /**
@@ -121,7 +137,7 @@ const METALLIC_INPUTS = ["metallic", "metallic_constant"];
 const ROUGHNESS_INPUTS = ["roughness", "reflection_roughness_constant"];
 const EMISSIVE_INPUTS = ["emissiveColor", "emissive_color"];
 
-const SURFACE_OUTPUTS = ["outputs:surface", "outputs:mdl:surface"];
+const SURFACE_OUTPUTS = ["outputs:surface", "outputs:mdl:surface", "outputs:mtlx:surface"];
 
 /**
  * Per-channel texture lookup: `surface` names are `UsdPreviewSurface` inputs
@@ -184,6 +200,23 @@ export function resolveBoundMaterial(
   if (!material) return undefined;
   const shader = findSurfaceShader(material);
   if (!shader) return undefined;
+
+  // MaterialX (M21): standard_surface gets a dedicated reader; other ND_*
+  // surface shaders fall through to the generic best-effort reads (the
+  // ND_UsdPreviewSurface compatibility node matches them by construction).
+  const infoId = shader.GetAttribute("info:id").Get();
+  if (typeof infoId === "string" && infoId.startsWith("ND_")) {
+    if (infoId === MTLX_STANDARD_SURFACE) {
+      const result: ResolvedMaterial = { name: material.GetName() };
+      readStandardSurface(shader, result, options.onWarn);
+      return result;
+    }
+    if (infoId !== MTLX_USD_PREVIEW_SURFACE) {
+      options.onWarn?.(
+        `${material.GetPath()}: unknown MaterialX surface shader "${infoId}"; applying the best-effort UsdPreviewSurface mapping`,
+      );
+    }
+  }
 
   const mdlSource = readMdlShaderSource(shader, options.mdl);
   if (mdlSource && !mdlSource.family) {
@@ -270,6 +303,20 @@ export function resolveBoundMaterial(
   }
 
   return result;
+}
+
+/**
+ * The `Shader` prim driving `prim`'s bound material surface, or `undefined`.
+ * Follows the same binding/surface-output resolution as
+ * {@link resolveBoundMaterial} — exposed for custom material factories (M22)
+ * that need the raw shader network rather than the flattened parameters.
+ */
+export function findBoundSurfaceShader(stage: Stage, prim: Prim): Prim | undefined {
+  const materialPath = findBinding(prim);
+  if (!materialPath) return undefined;
+  const material = stage.GetPrimAtPath(materialPath);
+  if (!material) return undefined;
+  return findSurfaceShader(material);
 }
 
 /** Omniverse MDL material family driving the family-specific parameter reads. */
@@ -591,6 +638,10 @@ function connectedPrim(prim: Prim, input: string): Prim | null {
   return prim.GetStage().GetPrimAtPath(conn.split(".")[0] as string);
 }
 
+// The MaterialX `ND_Usd*` compatibility nodes mirror the native node inputs.
+const TRANSFORM2D_IDS = new Set(["UsdTransform2d", "ND_UsdTransform2d"]);
+const PRIMVAR_READER_IDS = new Set(["UsdPrimvarReader_float2", "ND_UsdPrimvarReader_vector2"]);
+
 /**
  * Walk the `inputs:st` chain: an optional `UsdTransform2d` (translate /
  * rotate / scale) feeding from a `UsdPrimvarReader_float2`, whose
@@ -599,7 +650,7 @@ function connectedPrim(prim: Prim, input: string): Prim | null {
 function readStChain(texPrim: Prim): { transform?: TextureTransform; uvSet?: string } {
   const out: { transform?: TextureTransform; uvSet?: string } = {};
   let node = connectedPrim(texPrim, "inputs:st");
-  if (node && node.GetAttribute("info:id").Get() === "UsdTransform2d") {
+  if (node && TRANSFORM2D_IDS.has(node.GetAttribute("info:id").Get() as string)) {
     const transform: TextureTransform = {};
     const translation = numArray(node, "inputs:translation", 2);
     if (translation) transform.translation = translation as Vec2;
@@ -610,7 +661,7 @@ function readStChain(texPrim: Prim): { transform?: TextureTransform; uvSet?: str
     if (Object.keys(transform).length > 0) out.transform = transform;
     node = connectedPrim(node, "inputs:in");
   }
-  if (node && node.GetAttribute("info:id").Get() === "UsdPrimvarReader_float2") {
+  if (node && PRIMVAR_READER_IDS.has(node.GetAttribute("info:id").Get() as string)) {
     const varname = node.GetAttribute("inputs:varname").Get();
     if (typeof varname === "string" && varname.length > 0) out.uvSet = varname;
   }

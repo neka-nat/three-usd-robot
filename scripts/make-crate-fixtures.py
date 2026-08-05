@@ -20,6 +20,10 @@ fixture: OmniGlass / OmniPBR_ClearCoat shaders with authored inputs, plus a
 wrapper-only material (`./materials/CratePaint.mdl`, zero USD inputs) whose
 look must come from the parsed `.mdl` declaration.
 
+And test-assets/mtlx_materials.{usdc,usda} — the M21 MaterialX fixture:
+natively-authored ND_* networks (standard_surface constants, a tiledimage
+base_color, and the ND_UsdPreviewSurface compatibility shader).
+
 Requires pxr (pip install usd-core). Run from the repo root:
     python3 scripts/make-crate-fixtures.py
 """
@@ -30,6 +34,8 @@ OUT_USDC = "test-assets/anim_arm.usdc"
 OUT_USDA = "test-assets/anim_arm.usda"
 OUT_MDL_USDC = "test-assets/mdl_materials.usdc"
 OUT_MDL_USDA = "test-assets/mdl_materials.usda"
+OUT_MTLX_USDC = "test-assets/mtlx_materials.usdc"
+OUT_MTLX_USDA = "test-assets/mtlx_materials.usda"
 
 
 def build(stage: Usd.Stage) -> None:
@@ -167,8 +173,67 @@ def build_mdl(stage: Usd.Stage) -> None:
         UsdShade.MaterialBindingAPI.Apply(cube.GetPrim()).Bind(mat)
 
 
+def build_mtlx(stage: Usd.Stage) -> None:
+    """M21: natively-authored MaterialX (ND_*) shader networks in crate form."""
+    UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+    UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+    world = UsdGeom.Xform.Define(stage, "/World")
+    stage.SetDefaultPrim(world.GetPrim())
+    UsdGeom.Scope.Define(stage, "/World/Looks")
+
+    def mtlx_material(name, shader_id, inputs):
+        mat = UsdShade.Material.Define(stage, f"/World/Looks/{name}")
+        shader = UsdShade.Shader.Define(stage, f"/World/Looks/{name}/Surface")
+        shader.CreateIdAttr(shader_id)
+        for input_name, input_type, value in inputs:
+            shader.CreateInput(input_name, input_type).Set(value)
+        shader.CreateOutput("out", Sdf.ValueTypeNames.Token)
+        mat.CreateSurfaceOutput("mtlx").ConnectToSource(shader.ConnectableAPI(), "out")
+        return mat, shader
+
+    steel, _ = mtlx_material(
+        "Steel",
+        "ND_standard_surface_surfaceshader",
+        [
+            ("base", Sdf.ValueTypeNames.Float, 1.0),
+            ("base_color", Sdf.ValueTypeNames.Color3f, Gf.Vec3f(0.2, 0.3, 0.4)),
+            ("metalness", Sdf.ValueTypeNames.Float, 0.9),
+            ("specular_roughness", Sdf.ValueTypeNames.Float, 0.35),
+            ("coat", Sdf.ValueTypeNames.Float, 1.0),
+            ("coat_roughness", Sdf.ValueTypeNames.Float, 0.15),
+            ("specular_IOR", Sdf.ValueTypeNames.Float, 1.6),
+        ],
+    )
+    textured, surface = mtlx_material("Textured", "ND_standard_surface_surfaceshader", [])
+    image = UsdShade.Shader.Define(stage, "/World/Looks/Textured/Image")
+    image.CreateIdAttr("ND_tiledimage_color3")
+    image.CreateInput("file", Sdf.ValueTypeNames.Asset).Set("./crate.png")
+    image.CreateInput("uvtiling", Sdf.ValueTypeNames.Float2).Set(Gf.Vec2f(2.0, 2.0))
+    image.CreateOutput("out", Sdf.ValueTypeNames.Color3f)
+    surface.CreateInput("base_color", Sdf.ValueTypeNames.Color3f).ConnectToSource(
+        image.ConnectableAPI(), "out"
+    )
+    preview, _ = mtlx_material(
+        "Preview",
+        "ND_UsdPreviewSurface_surfaceshader",
+        [
+            ("diffuseColor", Sdf.ValueTypeNames.Color3f, Gf.Vec3f(0.8, 0.1, 0.1)),
+            ("roughness", Sdf.ValueTypeNames.Float, 0.5),
+        ],
+    )
+
+    for name, mat in (("steel", steel), ("textured", textured), ("preview", preview)):
+        cube = UsdGeom.Cube.Define(stage, f"/World/{name}")
+        cube.CreateSizeAttr(0.1)
+        UsdShade.MaterialBindingAPI.Apply(cube.GetPrim()).Bind(mat)
+
+
 def main() -> None:
-    for builder, paths in ((build, (OUT_USDC, OUT_USDA)), (build_mdl, (OUT_MDL_USDC, OUT_MDL_USDA))):
+    for builder, paths in (
+        (build, (OUT_USDC, OUT_USDA)),
+        (build_mdl, (OUT_MDL_USDC, OUT_MDL_USDA)),
+        (build_mtlx, (OUT_MTLX_USDC, OUT_MTLX_USDA)),
+    ):
         stage = Usd.Stage.CreateInMemory()
         builder(stage)
         layer = stage.GetRootLayer()

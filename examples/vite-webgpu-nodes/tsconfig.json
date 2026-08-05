@@ -1,0 +1,19 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "strict": true,
+    "skipLibCheck": true,
+    "noEmit": true,
+    // Mirror the vite aliases so the editor/tsc resolve the library from source.
+    "baseUrl": ".",
+    "paths": {
+      "three-usd-robot": ["../../src/index.ts"],
+      "three-usd-robot/core": ["../../src/core.ts"],
+      "three-usd-robot/nodes": ["../../src/nodes.ts"]
+    }
+  },
+  "include": ["src", "vite.config.ts"]
+}

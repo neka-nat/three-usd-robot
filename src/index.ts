@@ -24,9 +24,11 @@ export {
   buildGprimObject,
   buildMeshGeometry,
   buildMeshMaterial,
+  type MaterialFactory,
   type MeshKind,
 } from "./three/MeshBinding.js";
 export {
+  findBoundSurfaceShader,
   type ResolvedMaterial,
   type ResolvedTexture,
   type ResolveMaterialOptions,

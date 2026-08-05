@@ -35,6 +35,14 @@ import type { ThreeUsdRobot } from "./ThreeUsdRobot.js";
 
 export type MeshKind = "visual" | "collision";
 
+/**
+ * Replaces material creation for mesh-like gprims (`Mesh` and the parametric
+ * solids). Return `null` to fall back to the default `UsdShade` resolution —
+ * the hook that lets the optional `three-usd-robot/nodes` entry build TSL
+ * `NodeMaterial`s without the core depending on `three/webgpu` (M22).
+ */
+export type MaterialFactory = (prim: Prim, stage: Stage) => THREE.Material | null;
+
 const DEFAULT_COLOR = 0x9a9a9a;
 
 export type BindMeshesOptions = {
@@ -48,6 +56,8 @@ export type BindMeshesOptions = {
   onWarn?: (message: string) => void;
   /** Parsed `.mdl` modules for MDL material family/value resolution (M20). */
   mdl?: MdlModuleProvider;
+  /** Overrides material creation for mesh-like gprims (M22). */
+  materialFactory?: MaterialFactory;
 };
 
 /** Interpolation domain of a resolved primvar (UsdGeom tokens; `varying` ⇒ `vertex`). */
@@ -427,6 +437,8 @@ export type BuildGprimOptions = {
   onWarn?: (message: string) => void;
   /** Parsed `.mdl` modules for MDL material family/value resolution (M20). */
   mdl?: MdlModuleProvider;
+  /** Overrides material creation for mesh-like gprims (M22). */
+  materialFactory?: MaterialFactory;
 };
 
 /**
@@ -450,9 +462,12 @@ export function buildGprimObject(
     default: {
       const geometry = buildGprimGeometry(prim);
       if (!geometry) return null;
+      // The factory (M22) replaces the whole material; `null` means "not mine".
+      const custom = stage && options.materialFactory ? options.materialFactory(prim, stage) : null;
       return new THREE.Mesh(
         geometry,
-        buildMeshMaterials(prim, stage, options.textureProvider, options.onWarn, options.mdl),
+        custom ??
+          buildMeshMaterials(prim, stage, options.textureProvider, options.onWarn, options.mdl),
       );
     }
   }
@@ -755,7 +770,7 @@ export function buildMeshMaterial(
   const uvSetNames = meshUvSetNames(meshPrim);
   const tex = (rt: ResolvedTexture | undefined, cs: "srgb" | "linear") => {
     if (!rt || !textures) return null;
-    const channel = rt.uvSet ? Math.max(uvSetNames.indexOf(rt.uvSet), 0) : 0;
+    const channel = rt.uvChannel ?? (rt.uvSet ? Math.max(uvSetNames.indexOf(rt.uvSet), 0) : 0);
     const colorSpace =
       rt.sourceColorSpace === "raw" ? "linear" : rt.sourceColorSpace === "sRGB" ? "srgb" : cs;
     return textures(rt.path, {
@@ -908,6 +923,7 @@ export function bindRobotMeshes(
     ...(options.curveTubes ? { curveTubes: true } : {}),
     ...(options.onWarn ? { onWarn: options.onWarn } : {}),
     ...(options.mdl ? { mdl: options.mdl } : {}),
+    ...(options.materialFactory ? { materialFactory: options.materialFactory } : {}),
   };
 
   for (const [key, link] of Object.entries(desc.links)) {
@@ -950,6 +966,7 @@ export function bindSceneMeshes(
     curveTubes?: boolean;
     onWarn?: (message: string) => void;
     mdl?: MdlModuleProvider;
+    materialFactory?: MaterialFactory;
   } = {},
 ): number {
   const owned = new Set<string>();
@@ -983,6 +1000,7 @@ export function bindSceneMeshes(
     ...(options.curveTubes ? { curveTubes: true } : {}),
     ...(options.onWarn ? { onWarn: options.onWarn } : {}),
     ...(options.mdl ? { mdl: options.mdl } : {}),
+    ...(options.materialFactory ? { materialFactory: options.materialFactory } : {}),
   };
 
   let attached = 0;

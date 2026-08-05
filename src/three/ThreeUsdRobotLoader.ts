@@ -10,7 +10,7 @@ import { CrateReader } from "../usd/crate/CrateReader.js";
 import { crateToUsdaFile } from "../usd/crate/toUsdaFile.js";
 import { loadMdlModules } from "../usd/mdl/loadMdlModules.js";
 import { isZip, openUsdz } from "../usd/usdz.js";
-import { bindRobotMeshes, bindSceneMeshes } from "./MeshBinding.js";
+import { type MaterialFactory, bindRobotMeshes, bindSceneMeshes } from "./MeshBinding.js";
 import { createTextureProvider } from "./TextureBinding.js";
 import { ThreeUsdRobot, type ThreeUsdRobotOptions, type WorldUpAxis } from "./ThreeUsdRobot.js";
 
@@ -63,6 +63,12 @@ export type ThreeUsdRobotLoaderOptions = {
   robotName?: string;
   /** Receives non-fatal load diagnostics. */
   onWarn?: (message: string) => void;
+  /**
+   * Overrides material creation for mesh-like gprims (M22) — e.g. the TSL
+   * MaterialX factory from `three-usd-robot/nodes`. Return `null` per prim to
+   * keep the default `UsdShade` resolution.
+   */
+  materialFactory?: MaterialFactory;
 };
 
 /** A composed stage plus the context needed to bind its meshes and textures. */
@@ -183,6 +189,7 @@ export class ThreeUsdRobotLoader {
         (this.options.loadTextures ?? true) ? createTextureProvider(resolver, baseUrl) : undefined;
       const curveTubes = this.options.curveTubes ?? false;
       const onWarn = this.options.onWarn;
+      const materialFactory = this.options.materialFactory;
       // Prefetch referenced `.mdl` modules (M20) — wrapper materials often
       // carry the whole look while the USD shader authors no inputs at all.
       const mdl = await loadMdlModules(stage, resolver, baseUrl);
@@ -194,6 +201,7 @@ export class ThreeUsdRobotLoader {
           ...(curveTubes ? { curveTubes } : {}),
           ...(onWarn ? { onWarn } : {}),
           ...(mdl ? { mdl } : {}),
+          ...(materialFactory ? { materialFactory } : {}),
         });
       }
       if (loadScene) {
@@ -202,6 +210,7 @@ export class ThreeUsdRobotLoader {
           ...(curveTubes ? { curveTubes } : {}),
           ...(onWarn ? { onWarn } : {}),
           ...(mdl ? { mdl } : {}),
+          ...(materialFactory ? { materialFactory } : {}),
         });
       }
       this.warnUnsupportedGprims(stage);

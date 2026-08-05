@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>three-usd-robot — MaterialX TSL nodes (WebGPU)</title>
+    <style>
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+        overflow: hidden;
+        background: #202024;
+      }
+      #info {
+        position: absolute;
+        top: 12px;
+        left: 12px;
+        color: #ddd;
+        font: 13px/1.5 system-ui, sans-serif;
+        pointer-events: none;
+        text-shadow: 0 1px 2px #000;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="info">
+      <b>MaterialX → TSL (M22)</b> — procedural noise materials executed as
+      NodeMaterials via <code>three-usd-robot/nodes</code>.<br />
+      Falls back to WebGL2 automatically where WebGPU is unavailable.
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

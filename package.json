@@ -40,6 +40,10 @@
       "types": "./dist/extras.d.ts",
       "import": "./dist/extras.js"
     },
+    "./nodes": {
+      "types": "./dist/nodes.d.ts",
+      "import": "./dist/nodes.js"
+    },
     "./react": {
       "types": "./dist/react.d.ts",
       "import": "./dist/react.js"
@@ -49,7 +53,7 @@
   "module": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "scripts": {
-    "build": "tsup",
+    "build": "tsup && node scripts/verify-bundle.mjs",
     "dev": "tsup --watch",
     "test": "vitest run",
     "test:watch": "vitest",
