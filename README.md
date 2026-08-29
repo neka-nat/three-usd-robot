@@ -22,14 +22,12 @@ exported back to `.usda` / `.usdz` in the browser.
   Multi-file assets (references / payloads / sublayers), variant selections and
   instanceable prims are composed for you.
 - **Robots** — links, joints (fixed / revolute / continuous / prismatic), limits,
-  drives and the initial pose become a `setJointValue`-able hierarchy.
-- **Rendering** — meshes, solid gprims (`Cube` / `Sphere` / `Cylinder` /
-  `Capsule` / `Cone`), point clouds (`Points`) and curves (`BasisCurves`:
-  linear / bezier / bspline / catmullRom, periodic wrap, and an opt-in
-  `curveTubes` mode that turns authored widths into tube meshes) with
-  `UsdShade` materials (UsdPreviewSurface / Omniverse MDL / MaterialX) and textures; up-axis
-  and units normalized automatically. Articulation-free stages load as
-  static scenes.
+  drives, mimic couplings (gripper finger linkages) and the initial pose become
+  a `setJointValue`-able hierarchy.
+- **Rendering** — meshes, solid gprims, point clouds and curves with `UsdShade`
+  materials (UsdPreviewSurface / Omniverse MDL / MaterialX, plus optional TSL
+  graph execution on WebGPU) and textures; up-axis and units normalized
+  automatically. Articulation-free stages load as static scenes.
 - **Animation** — plays back time-sampled joint trajectories, and replays
   baked body-transform recordings through `setLinkTransforms` with
   constraint diagnostics.
@@ -55,71 +53,6 @@ The CDN is public and CORS-enabled, so this works in the browser too. Try
 FK check, and a re-export to one self-contained file), or open the Vite example
 and pick a robot from the preset list.
 
-Materials target **UsdPreviewSurface fidelity plus Omniverse MDL and MaterialX mappings**:
-constant and textured inputs, faceVarying / indexed UVs, multiple UV sets,
-per-vertex display colors, physical extensions (`ior` / `clearcoat` /
-specular workflow → `MeshPhysicalMaterial`), packed ORM maps,
-`sourceColorSpace`, and purpose/strength-aware bindings. MDL shaders are
-identified by `info:mdl:sourceAsset` and mapped **by family** — no shader
-execution — and referenced `.mdl` modules are fetched and parsed for their
-declaration values, so wrapper materials
-(`export material X(*) = OmniPBR(…)`) render correctly even when the USD
-shader authors no inputs at all. Value priority: authored USD inputs >
-wrapper arguments > declaration defaults.
-
-| MDL family | three.js mapping |
-| --- | --- |
-| `OmniPBR` (and derivatives, e.g. `OmniPBR_Opacity`) | color / metalness / roughness / emissive (`emissive_intensity`), per-channel texture maps and packed `ORM_texture`, opacity, normal map, `texture_translate/rotate/scale` |
-| `OmniPBR_ClearCoat` | the OmniPBR mapping plus `clearcoat` / `clearcoatRoughness` / `clearcoatNormalMap` |
-| `OmniGlass` | `MeshPhysicalMaterial` with `transmission` / `ior` (default 1.491) / `roughness` / `thickness`, glass color + texture |
-| `OmniSurface(Lite)` | constants subset: diffuse color / metalness / roughness / IOR / coat / emission / opacity |
-
-MaterialX networks authored natively in UsdShade (`outputs:mtlx:surface` +
-`ND_*` shaders) resolve the same way — by parameter mapping, without graph
-execution. `ND_standard_surface_surfaceshader` maps `base × base_color` /
-`metalness` / `specular_roughness` / `specular_IOR` / `coat(_roughness)` /
-`transmission` / `emission (× emission_color)` / `opacity` / `normal` onto
-the standard (or, when coat / transmission / IOR are authored, physical)
-three material; the `ND_Usd*` compatibility nodes delegate to the
-UsdPreviewSurface readers. Image and UV nodes are supported
-(`ND_image_*` address modes, `ND_tiledimage_*` uvtiling/uvoffset,
-`ND_texcoord_*` UV-channel index, `ND_geompropvalue_*` primvar name,
-`ND_normalmap`), and constant-only `ND_multiply_* / ND_mix_* / ND_convert_*`
-(plus `ND_constant_*` / `ND_dot_*`) fold into values. Anything that needs
-real evaluation (noise, ramps, …) skips just that channel with a warning —
-the rest of the material still renders — unless you opt into the TSL entry
-below. External `.mtlx` file references (UsdMtlx) are not parsed; load them
-with `loadMaterialXDocument` (a thin wrapper over three's official
-`MaterialXLoader`) from `three-usd-robot/nodes`.
-
-**Executing MaterialX graphs (optional, WebGPU)** — the separate
-`three-usd-robot/nodes` entry converts `ND_*` graphs (noise, ramps, math,
-images, procedural UV warps — a ~45-node practical subset) into three.js TSL
-`MeshPhysicalNodeMaterial`s and plugs in through the loader's
-`materialFactory` hook:
-
-```ts
-import { ThreeUsdRobotLoader } from "three-usd-robot";
-import { createMaterialXNodeFactory } from "three-usd-robot/nodes";
-
-const loader = new ThreeUsdRobotLoader({
-  materialFactory: createMaterialXNodeFactory({ onWarn: console.warn }),
-});
-```
-
-Requires `WebGPURenderer` (it falls back to WebGL2 internally). Graphs with
-nodes outside the conversion table fall back to the parameter mapping with a
-warning, and the WebGL core bundles never import `three/webgpu` / `three/tsl`
-(verified at build time). See `examples/vite-webgpu-nodes` for a procedural
-marble / worley / lava demo.
-
-Executing MDL remains out of scope (a language, not a graph — it would need
-an MDL SDK-class compiler); unknown MDL materials fall back to the OmniPBR
-mapping (and unknown `ND_*` surface shaders to the UsdPreviewSurface reads)
-with a warning. Not yet supported: collection-based material bindings, and
-the exotic curve schemas (`NurbsCurves`, `HermiteCurves`, `NurbsPatch`)
-which load with a warning and are skipped.
-
 ## Install
 
 ```sh
@@ -144,221 +77,33 @@ robot.setJointValues({ joint1: 0.4, joint2: -0.2 });
 const handMatrix = robot.getLinkWorldMatrix("tool0"); // THREE.Matrix4
 const handPos = robot.getLinkWorldPosition("tool0"); // THREE.Vector3
 
-robot.getJointNames(); // controllable joints
+robot.getJointNames(); // commandable joints
 robot.getKinematicTree(); // root, ordering, loop joints, ...
 ```
 
-No URL? `parse` also takes in-memory content: USDA source text, or an
-`ArrayBuffer` / typed array / `Blob` holding any supported format — the zip /
-crate magic is sniffed, so a dropped `File` or a response body works as-is:
+`parse` also takes in-memory content (USDA text, an `ArrayBuffer` / typed
+array / `Blob` — the format is sniffed, so a dropped `File` works as-is), and
+the loader normalizes units and up-axis for you: Isaac's Z-up assets stand
+upright in a Y-up three.js scene by default, or pass `worldUp: "Z"` for a
+robotics-style Z-up world. Details in the [runtime guide](./docs/runtime.md).
 
-```ts
-const loader = new ThreeUsdRobotLoader();
-await loader.parse(usdaText); // USDA source string
-await loader.parse(file); // File / Blob from drag & drop or <input type="file">
-await loader.parse(await res.arrayBuffer()); // a fetch you did yourself
-```
+## Documentation
 
-`parseUsdz(data)` / `parseCrate(data, baseUrl)` stay as explicit-format entries,
-and `parseRobotDescription(data)` returns the Three.js-independent IR. Pass a
-`baseUrl` as the second `parse` argument if the layer has relative references
-or texture paths to resolve.
-
-### World up-axis & units
-
-Stages load normalized: `metersPerUnit` scales the root, and the authored
-`upAxis` (`"Y"` or `"Z"`) is rotated into your world convention via `worldUp`:
-
-```ts
-new ThreeUsdRobotLoader(); // default: "Y" — upright in a stock three.js scene
-new ThreeUsdRobotLoader({ worldUp: "Z" }); // robotics-style Z-up world
-new ThreeUsdRobotLoader({ worldUp: "keep" }); // leave the authored orientation
-
-robot.upAxis; // authored stage value ("Y" | "Z"), independent of normalization
-robot.metersPerUnit; // authored stage scale (already applied to the root)
-```
-
-Isaac Sim assets are Z-up, so the default makes them stand upright in a plain
-three.js scene; a Z-up app (ROS-style) passes `worldUp: "Z"` once instead of
-counter-rotating per asset. The M9 option `upAxisConversion` remains as a
-deprecated alias (`"auto"` ≡ `worldUp: "Y"`, `"none"` ≡ `"keep"`).
-
-### Stable addressing (naming contract)
-
-Joints and links are keyed by their prim's **leaf name** while it is unique
-across the robot; on a collision (say, two arms each with a `seg` link) the
-colliding entries are keyed by their **full prim path** instead —
-deterministically. Every accessor also takes the full prim path directly, so
-tooling can pin exact prims no matter how the asset is named:
-
-```ts
-robot.setJointValue("/World/armL/j1", 0.4); // same joint as its key
-robot.getLinkWorldMatrix("/World/armL/seg");
-robot.getLinkObjectsByPath(); // Map<primPath, LinkObject>
-robot.getJointObjectsByPath(); // Map<primPath, JointObject>
-```
-
-`LinkObject.primPath` / `JointObject.primPath` carry the reverse direction.
-
-### Viewer toggles & helpers
-
-```ts
-robot.showVisual = true;
-robot.showCollision = false;
-robot.showJointAxes = true; // built-in axes gizmos on each joint
-robot.showLinkFrames = false;
-
-import { addJointLimitHelpers } from "three-usd-robot/helpers";
-addJointLimitHelpers(robot); // arc (revolute) / segment (prismatic) per joint
-```
-
-### Link highlighting & ghosts
-
-Per-link appearance helpers cover the common viewer chores — flagging
-colliding links, material swaps, and translucent "ghost" pose previews:
-
-```ts
-import {
-  createGhostRobot,
-  highlightLink,
-  restoreLinkMaterials,
-  setLinkMaterial,
-} from "three-usd-robot/helpers";
-
-highlightLink(robot, "link1"); // emissive red tint; maps/colors kept
-highlightLink(robot, "/World/armL/seg", { color: 0xffaa00, opacity: 0.6 });
-setLinkMaterial(robot, "link2", new THREE.MeshBasicMaterial({ wireframe: true }));
-restoreLinkMaterials(robot, "link1"); // exact original materials back
-
-const ghost = createGhostRobot(robot, { jointValues: { joint1: 1.2 } });
-scene.add(ghost); // translucent copy previewing the target pose
-ghost.setJointValues(ikSolution); // a full ThreeUsdRobot, driveable like the source
-```
-
-Highlights never stack (each call re-tints from the originals), and ghosts
-share the source's geometry — cloning is cheap enough for onion-skinning.
-
-Loading a whole cell rather than a bare robot? Pass
-`{ loadSceneGeometry: true }` to the loader to draw the static environment
-(floor, guarding, racking, …) around the machines. A stage with **no
-articulation at all** — a plain static USD scene — is detected and rendered as
-scene geometry automatically, with the same unit / up-axis normalization; pass
-`loadSceneGeometry: false` to opt out.
-
-### Joint slider panel (lil-gui)
-
-```ts
-import GUI from "lil-gui";
-import { createJointSliderPanel } from "three-usd-robot/extras";
-
-createJointSliderPanel(robot, new GUI()); // one slider per articulated joint
-```
-
-The panel takes the GUI instance from you, so the library never bundles
-`lil-gui`.
-
-### Animation playback
-
-If the asset has time-sampled joint trajectories, the robot plays them back:
-
-```ts
-const range = robot.getTimeRange();
-if (range) {
-  // in your render loop, advance a time code between range.start and range.end:
-  robot.setTime(t); // interpolates every animated joint and updates FK
-}
-```
-
-### Baked link transforms (recorded playback)
-
-Recordings baked as **body transforms** (Isaac Sim stage-recorder output,
-maximal-coordinate solver playback) can drive link poses directly, bypassing
-the joints — usdview-style display semantics:
-
-```ts
-// A world-pose track keyed by prim path (or link key), quaternion in [x, y, z, w]:
-robot.setLinkTransforms({
-  "/World/link1": { position: [0, 0, 1], quaternion: [0, 0, 0, 1] },
-  "/World/link2": { position: [0.3, 0, 2], quaternion: [0, 0, 0, 1] },
-}); // batched — one matrix update; unlisted links keep their current world pose
-
-robot.displayMode; // "baked": joint values are untouched and no longer place links
-robot.setJointValues(liveValues); // recompute all links from joint values → "fk"
-```
-
-Poses are read in the **three.js scene world after `worldUp` normalization** —
-pair a Z-up meter track (Isaac / ROS convention) with `worldUp: "Z"`; feeding
-it into the default Y-up normalization lays the robot on its side. Transforms
-on the `robot` object itself (placement, uniform scaling) are accounted for,
-and `{ space: "stage" }` reads authored stage coordinates instead.
-
-Constraint deviations — a recording from a different model version, solver
-drift, a coordinate-convention bug — are shown, never silently corrected.
-Measure them, or project onto the joints instead:
-
-```ts
-robot.validateLinkTransforms(poses);
-// { "/World/joint1": { anchorError /* m */, axisError /* rad */, q, limitExceeded }, … }
-// covers every joint: fixed joints, loop joints dropped from the FK tree,
-// and the world-fixed root attachment
-
-const { values, residuals } = robot.jointValuesFromLinkTransforms(poses, {
-  previous: lastValues, // ±π branch continuity, frame to frame
-});
-robot.setJointValues(values); // constraint-respecting playback of the same track
-```
-
-`new ThreeUsdRobotLoader({ debugBakedTransforms: true })` warns once per baked
-session when poses deviate beyond 1 mm / 0.01 rad.
-
-### React Three Fiber
-
-`three-usd-robot/react` provides a declarative `<UsdRobot>` (`react` and
-`@react-three/fiber` are **optional** peer deps):
-
-```tsx
-import { Canvas } from "@react-three/fiber";
-import { Suspense } from "react";
-import { UsdRobot } from "three-usd-robot/react";
-
-<Canvas camera={{ position: [2, 2, 2] }}>
-  <Suspense fallback={null}>
-    <UsdRobot
-      url="/robot.usda"
-      jointValues={{ joint1: 0.4 }} // controlled
-      showJointAxes
-      animate // play time-sampled trajectories
-      onLoad={(robot) => console.log(robot.getJointNames())}
-    />
-  </Suspense>
-  <ambientLight />
-</Canvas>;
-```
-
-Also exported: `useUsdRobot(url)` (Suspense loader), `useRobotAnimation(robot)`,
-`preloadUsdRobot`, `clearUsdRobotCache`. Pass a `ref` to `<UsdRobot>` for the
-imperative API.
+| Doc | Contents |
+| --- | --- |
+| [Runtime guide](./docs/runtime.md) | Input sources, up-axis & units, naming contract, mimic joints, viewer helpers & ghosts, static scenes, joint sliders, React Three Fiber, using the core without Three.js |
+| [Materials](./docs/materials.md) | UsdPreviewSurface fidelity, Omniverse MDL family mappings, MaterialX, optional TSL graph execution (WebGPU) |
+| [Animation & recorded playback](./docs/recorded-playback.md) | Time-sampled trajectories, baked body-transform recordings, constraint diagnostics & joint projection |
+| [Exporting USD](./docs/export.md) | Re-export, `RobotBuilder` authoring, simulation-ready assets (mass / collision / Isaac Robot Schema), USDZ packaging |
 
 ## Export USD
 
-The loader's inverse: re-export something you loaded, or author a robot from
-Three.js objects and open the result in Isaac Sim.
-
-![The exported cell opened in Isaac Sim](assets/isaacsim.png)
+The loader's inverse — author a robot from Three.js meshes and open it in
+Isaac Sim:
 
 ```ts
-import {
-  exportThreeUsdRobot,
-  RobotBuilder,
-  serializeUsda,
-  writeUsdz,
-} from "three-usd-robot";
+import { RobotBuilder, serializeUsda } from "three-usd-robot";
 
-// Re-export a loaded robot (meshes harvested from the Three.js scene):
-const usda = serializeUsda(exportThreeUsdRobot(robot));
-
-// …or build one from Three.js meshes. Z-up and metres by default; each joint
-// takes ONE world-space frame, and the build-time arrangement is the zero pose.
 const builder = new RobotBuilder({ name: "my_robot" });
 builder.addLink({ name: "base", visuals: [baseMesh] });
 builder.addLink({ name: "arm", frame: armFrame, visuals: [armMesh] });
@@ -367,46 +112,11 @@ builder.addRevoluteJoint({
   name: "j1", parent: "base", child: "arm",
   frame: jointFrame, axis: "Z", lower: -Math.PI, upper: Math.PI,
 });
-
-const file = builder.toUsda();
-writeFileSync("robot.usda", serializeUsda(file));
-writeFileSync("robot.usdz", writeUsdz({ "robot.usda": serializeUsda(file) }));
+writeFileSync("robot.usda", serializeUsda(builder.toUsda()));
 ```
 
-Joints export as `UsdPhysics` prims with their limits, drives and initial pose.
-For a simulation-ready asset, links also take mass properties, and collision
-meshes take physics materials and a collision approximation:
-
-```ts
-builder.addLink({
-  name: "arm",
-  visuals: [armMesh],
-  collisions: [armCollisionMesh],
-  inertial: { mass: 2.5, centerOfMass: [0, 0, 0.2], diagonalInertia: [0.02, 0.02, 0.004] },
-  collisionApproximation: "convexHull",
-  physicsMaterial: { name: "steel", staticFriction: 0.6, dynamicFriction: 0.5 },
-});
-```
-
-Both screenshots above come from `npx tsx scripts/demo-factory.ts`, which
-authors a complete robot cell — a 7-DOF arm with a gripper, a conveyor, a
-turntable and the surrounding scenery — and exports it to
-`out/factory.usda` / `.usdz`.
-
-## Use it without Three.js
-
-`three-usd-robot/core` is a standalone USD parser, writer and robot IR — handy
-for server-side validation or asset tooling:
-
-```ts
-import { parseUsda, Stage, extractRobotDescription } from "three-usd-robot/core";
-
-const desc = extractRobotDescription(Stage.OpenFromString(usdaText));
-console.log(desc.rootLink, Object.keys(desc.joints));
-```
-
-Command line: `npx tsx scripts/usdc-to-usda.ts robot.usd` converts binary crate
-and `.usdz` packages to ASCII USDA.
+Limits, drives, mimic couplings, the initial pose, mass properties and
+collision setup all serialize — see [Exporting USD](./docs/export.md).
 
 ## Examples
 
@@ -417,10 +127,11 @@ and `.usdz` packages to ASCII USDA.
   (prim tree + attribute inspector), a transform gizmo, joint sliders,
   animation playback and USD export.
 - **`vite-basic-viewer`** — the same thing through React Three Fiber.
+- **`vite-webgpu-nodes`** — MaterialX graph execution (TSL) on `WebGPURenderer`.
 
-Both take `?asset=<url>` for any asset, or `?isaac=<path under Isaac/>` to pull
-one straight from NVIDIA's CDN. `npm run demo:build` generates the factory cell
-and builds the deployable site.
+The viewers take `?asset=<url>` for any asset, or `?isaac=<path under Isaac/>`
+to pull one straight from NVIDIA's CDN. `npm run demo:build` generates the
+factory cell and builds the deployable site.
 
 ## Package entry points
 
@@ -428,7 +139,7 @@ and builds the deployable site.
 | --- | --- |
 | `three-usd-robot` | Three.js runtime — `ThreeUsdRobotLoader`, `ThreeUsdRobot`, `RobotBuilder`, export helpers |
 | `three-usd-robot/core` | Three.js-independent USD parser & writer, robot IR, forward-kinematics math |
-| `three-usd-robot/helpers` | Viewer helpers (joint axes, link frames, joint limits) |
+| `three-usd-robot/helpers` | Viewer helpers (joint axes, link frames, joint limits, highlights, ghosts) |
 | `three-usd-robot/extras` | Joint slider panel (bring your own `lil-gui`) |
 | `three-usd-robot/nodes` | Optional MaterialX → TSL execution (`three/webgpu`) — `createMaterialXNodeFactory`, `loadMaterialXDocument` |
 | `three-usd-robot/react` | React Three Fiber `<UsdRobot>` component + hooks |

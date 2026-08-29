@@ -136,6 +136,7 @@ export type {
   Axis,
   JointDescription,
   JointDriveDescription,
+  JointMimicDescription,
   JointType,
   LinkDescription,
   LinkInertialDescription,

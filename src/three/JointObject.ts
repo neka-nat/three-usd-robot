@@ -1,5 +1,10 @@
 import * as THREE from "three";
-import type { Axis, JointDescription, JointType } from "../robot/RobotDescription.js";
+import type {
+  Axis,
+  JointDescription,
+  JointMimicDescription,
+  JointType,
+} from "../robot/RobotDescription.js";
 import { axisVector } from "./axis.js";
 
 /**
@@ -18,6 +23,8 @@ export class JointObject extends THREE.Object3D {
   readonly axis: THREE.Vector3;
   readonly lower: number | undefined;
   readonly upper: number | undefined;
+  /** Mimic constraint this joint follows, if any (see {@link JointMimicDescription}). */
+  readonly mimic: JointMimicDescription | undefined;
 
   private _value = 0;
 
@@ -31,6 +38,7 @@ export class JointObject extends THREE.Object3D {
     this.axis = axisVector(joint.axis);
     this.lower = joint.lower;
     this.upper = joint.upper;
+    this.mimic = joint.mimic;
   }
 
   get value(): number {

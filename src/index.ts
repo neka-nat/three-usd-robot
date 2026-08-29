@@ -5,8 +5,6 @@
  * Three.js runtime; the Three.js-independent core (USDA parser, robot IR,
  * transform math) lives at `three-usd-robot/core` and is re-exported
  * here for convenience.
- *
- * See MILESTONES.md for the implementation roadmap.
  */
 
 export { PACKAGE_NAME, VERSION } from "./version.js";

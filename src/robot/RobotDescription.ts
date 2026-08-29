@@ -5,8 +5,6 @@
  * {@link RobotDescription}; the kinematics builder (M4) trees it; the Three.js
  * runtime (M5) realizes it as an `Object3D` hierarchy. Keeping the IR free of
  * Three.js lets the same data drive tooling, validation, and (later) IK.
- *
- * See concept.md §9 for the rationale behind each field.
  */
 
 import type { SampleChannel } from "../kinematics/sampling.js";
@@ -104,6 +102,23 @@ export type JointDescription = {
   /** Time-sampled joint value trajectory (SI), if authored — drives playback. */
   valueSamples?: SampleChannel;
   drive?: JointDriveDescription;
+  /** Mimic constraint: this joint follows another joint's value. */
+  mimic?: JointMimicDescription;
+};
+
+/**
+ * A mimic constraint — `follower = multiplier · leader + offset` (URDF
+ * convention, SI units) — read from `NewtonMimicAPI` (Isaac Sim 6 / Newton
+ * authoring) or the legacy PhysX `PhysxMimicJointAPI`. Leader and follower
+ * must share the motion kind (angular ↔ angular, linear ↔ linear).
+ */
+export type JointMimicDescription = {
+  /** Leader joint key (same key space as {@link RobotDescription.joints}). */
+  joint: string;
+  /** Scale on the leader value (dimensionless between same-type joints). */
+  multiplier: number;
+  /** Offset added after scaling, in SI (radians / stage linear units). */
+  offset: number;
 };
 
 /** Authored joint drive parameters (`UsdPhysicsDriveAPI`), as read in M3. */

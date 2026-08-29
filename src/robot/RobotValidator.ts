@@ -10,8 +10,10 @@
 
 import type { RobotGeometryProvider } from "../export/GeometryProvider.js";
 import { decomposeRigid } from "../kinematics/transforms.js";
-import type { RobotDescription } from "./RobotDescription.js";
+import type { JointType, RobotDescription } from "./RobotDescription.js";
 import { buildKinematicTree } from "./buildKinematicTree.js";
+
+const isAngular = (type: JointType): boolean => type === "revolute" || type === "continuous";
 
 export type ValidationSeverity = "error" | "warning";
 
@@ -87,6 +89,56 @@ export function validateRobotDescription(
           key,
         );
       }
+    }
+
+    const mimic = joint.mimic;
+    if (mimic) {
+      const leader = desc.joints[mimic.joint];
+      if (!leader) {
+        add(
+          "error",
+          "mimic-unknown-joint",
+          `joint "${key}" mimics unknown joint "${mimic.joint}"`,
+          key,
+        );
+      } else if (joint.type === "fixed" || leader.type === "fixed") {
+        add(
+          "error",
+          "mimic-fixed-joint",
+          `joint "${key}" mimic involves a fixed joint (inert)`,
+          key,
+        );
+      } else if (isAngular(joint.type) !== isAngular(leader.type)) {
+        add(
+          "error",
+          "mimic-type-mismatch",
+          `joint "${key}" (${joint.type}) mimics "${mimic.joint}" (${leader.type}) — leader and follower must share the motion kind`,
+          key,
+        );
+      }
+    }
+  }
+
+  // Mimic cycles: follow follower → leader edges; a walk that returns to its
+  // start is a cycle (each member reports once).
+  for (const startKey of Object.keys(desc.joints)) {
+    if (!desc.joints[startKey]?.mimic) continue;
+    const seen = new Set<string>();
+    let current: string | undefined = startKey;
+    while (current !== undefined && desc.joints[current]?.mimic) {
+      const next: string = desc.joints[current]!.mimic!.joint;
+      if (next === startKey) {
+        add(
+          "error",
+          "mimic-cycle",
+          `joint "${startKey}" is part of a mimic cycle — followers cannot be driven`,
+          startKey,
+        );
+        break;
+      }
+      if (seen.has(next)) break;
+      seen.add(next);
+      current = next;
     }
   }
 

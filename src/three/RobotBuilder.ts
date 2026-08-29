@@ -78,6 +78,12 @@ export type AddJointOptions = {
   /** Initial joint value in SI, exported as `PhysicsJointStateAPI`. */
   initialValue?: number;
   drive?: JointDriveDescription;
+  /**
+   * Follow another joint: `value = multiplier · leader + offset` (SI), exported
+   * as `NewtonMimicAPI`. The leader must be declared (in any order) and share
+   * the motion kind. `multiplier` defaults to `1`, `offset` to `0`.
+   */
+  mimic?: { joint: string; multiplier?: number; offset?: number };
 };
 
 type PendingJoint = {
@@ -133,7 +139,7 @@ export class RobotBuilder {
     return this;
   }
 
-  addFixedJoint(options: Omit<AddJointOptions, "axis" | "lower" | "upper">): this {
+  addFixedJoint(options: Omit<AddJointOptions, "axis" | "lower" | "upper" | "mimic">): this {
     return this.addJoint("fixed", options);
   }
 
@@ -186,6 +192,24 @@ export class RobotBuilder {
       const parentWorld = parent === "" ? identity4() : this.links.get(parent)!.world;
       const type = refineJointType(pending.type, options.lower, options.upper);
 
+      if (options.mimic) {
+        const leader = this.joints.get(options.mimic.joint);
+        if (!leader) {
+          throw new Error(
+            `RobotBuilder: joint "${name}" mimics unknown joint "${options.mimic.joint}"`,
+          );
+        }
+        if (options.mimic.joint === name) {
+          throw new Error(`RobotBuilder: joint "${name}" cannot mimic itself`);
+        }
+        const linear = (t: JointType) => t === "prismatic";
+        if (leader.type === "fixed" || linear(leader.type) !== linear(pending.type)) {
+          throw new Error(
+            `RobotBuilder: joint "${name}" (${pending.type}) cannot mimic "${options.mimic.joint}" (${leader.type})`,
+          );
+        }
+      }
+
       joints[name] = {
         name,
         primPath: `/${this.robotName}/${name}`,
@@ -199,6 +223,15 @@ export class RobotBuilder {
         ...(options.upper !== undefined ? { upper: options.upper } : {}),
         ...(options.initialValue !== undefined ? { initialValue: options.initialValue } : {}),
         ...(options.drive ? { drive: options.drive } : {}),
+        ...(options.mimic
+          ? {
+              mimic: {
+                joint: options.mimic.joint,
+                multiplier: options.mimic.multiplier ?? 1,
+                offset: options.mimic.offset ?? 0,
+              },
+            }
+          : {}),
       };
     }
 

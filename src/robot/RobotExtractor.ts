@@ -17,6 +17,7 @@ import {
   getJointDrive,
   getJointLimits,
   getJointLocalFrame,
+  getJointMimic,
   getJointStatePosition,
   getJointType,
   getMassProperties,
@@ -87,9 +88,10 @@ export function extractRobotDescription(
   const joints: Record<string, JointDescription> = {};
   const jointKeyByPath = buildKeyMap(jointPrims.map((p) => p.GetPath()));
   for (const jp of jointPrims) {
-    const joint = buildJoint(jp, linkKeyByPath, warn);
+    const joint = buildJoint(jp, linkKeyByPath, jointKeyByPath, warn);
     if (joint) joints[jointKeyByPath.get(jp.GetPath())!] = joint;
   }
+  dropInvalidMimics(joints, warn);
 
   const name =
     options.robotName ??
@@ -161,6 +163,7 @@ function isIdentityMat4(m: Mat4): boolean {
 function buildJoint(
   prim: Prim,
   linkKeyByPath: Map<string, string>,
+  jointKeyByPath: Map<string, string>,
   warn: (m: string) => void,
 ): JointDescription | null {
   const base = getJointType(prim);
@@ -230,7 +233,46 @@ function buildJoint(
     joint.valueSamples = { times, values };
   }
 
+  // Mimic constraint (NewtonMimicAPI / PhysxMimicJointAPI), offset SI-normalized.
+  const mimic = getJointMimic(prim);
+  if (mimic) {
+    joint.mimic = {
+      joint: jointKeyByPath.get(mimic.referencePath) ?? mimic.referencePath,
+      multiplier: mimic.multiplier,
+      offset: jointValueToSI(angular, mimic.offset),
+    };
+  }
+
   return joint;
+}
+
+/**
+ * Drop mimic constraints the runtime could not honor — an unknown or
+ * self-referencing leader, or a motion-kind mismatch (Newton requires leader
+ * and follower to share the joint type) — each with a warning.
+ */
+function dropInvalidMimics(
+  joints: Record<string, JointDescription>,
+  warn: (m: string) => void,
+): void {
+  for (const [key, joint] of Object.entries(joints)) {
+    const mimic = joint.mimic;
+    if (!mimic) continue;
+    const leader = joints[mimic.joint];
+    let reason: string | null = null;
+    if (!leader) reason = `references unknown joint "${mimic.joint}"`;
+    else if (mimic.joint === key) reason = "references itself";
+    else if (joint.type === "fixed" || leader.type === "fixed") {
+      reason = "connects a fixed joint (inert)";
+    } else if (driveKindFor(joint.type) !== driveKindFor(leader.type)) {
+      reason = `couples a ${joint.type} joint to a ${leader.type} leader`;
+    }
+    if (reason) {
+      warn(`${joint.primPath}: mimic ${reason}; ignoring`);
+      const { mimic: _dropped, ...rest } = joint;
+      joints[key] = rest;
+    }
+  }
 }
 
 /** Map each path to a stable key: leaf name when unique, else the full path. */

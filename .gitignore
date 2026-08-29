@@ -29,6 +29,9 @@ yarn-error.log*
 .env
 .env.local
 
+# Internal (non-public) planning & design docs
+.internal/
+
 # Local USD assets (large binaries; not committed — .usda text examples are kept)
 data/
 examples/**/*.usd

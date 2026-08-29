@@ -28,6 +28,8 @@ export const COLLISION_API = "PhysicsCollisionAPI";
 export const MASS_API = "PhysicsMassAPI";
 export const MESH_COLLISION_API = "PhysicsMeshCollisionAPI";
 export const PHYSICS_MATERIAL_API = "PhysicsMaterialAPI";
+export const NEWTON_MIMIC_API = "NewtonMimicAPI";
+export const PHYSX_MIMIC_API = "PhysxMimicJointAPI";
 
 /** Base joint type from the prim's schema type, or `null` if not a joint. */
 export function getJointType(prim: Prim): JointType | null {
@@ -107,6 +109,66 @@ export function getJointDrive(
 /** Read `PhysicsJointStateAPI` position for the given instance, as authored. */
 export function getJointStatePosition(prim: Prim, kind: "angular" | "linear"): number | undefined {
   return readNumber(prim, `state:${kind}:physics:position`);
+}
+
+/**
+ * A mimic constraint as authored, normalized to the URDF-style equation
+ * `follower = multiplier · leader + offset` with `offset` still in authored
+ * units (degrees for angular joints).
+ */
+export type RawJointMimic = {
+  /** Prim path of the leader (mimicked) joint. */
+  referencePath: SdfPath;
+  multiplier: number;
+  offset: number;
+};
+
+/**
+ * Read a mimic constraint off a joint prim. `NewtonMimicAPI` (Isaac Sim 6 /
+ * Newton authoring: `follower = coef0 + coef1 · leader`) wins over the legacy
+ * PhysX multi-apply `PhysxMimicJointAPI:<dof>`, whose constraint
+ * `q_this + gearing · q_ref + offset = 0` is sign-flipped into the same form.
+ * Returns `undefined` when no mimic is authored, it is disabled, or no
+ * reference joint is targeted.
+ */
+export function getJointMimic(prim: Prim): RawJointMimic | undefined {
+  if (prim.HasAPI(NEWTON_MIMIC_API)) {
+    if (prim.GetAttribute("newton:mimicEnabled").Get() === false) return undefined;
+    const referencePath = prim.GetRelationship("newton:mimicJoint").GetTargets()[0];
+    if (referencePath === undefined) return undefined;
+    return {
+      referencePath,
+      multiplier: readNumber(prim, "newton:mimicCoef1") ?? 1,
+      offset: readNumber(prim, "newton:mimicCoef0") ?? 0,
+    };
+  }
+  for (const instance of physxMimicInstances(prim)) {
+    const referencePath = prim
+      .GetRelationship(`physxMimicJoint:${instance}:referenceJoint`)
+      .GetTargets()[0];
+    if (referencePath === undefined) continue;
+    const gearing = readNumber(prim, `physxMimicJoint:${instance}:gearing`) ?? 1;
+    const offset = readNumber(prim, `physxMimicJoint:${instance}:offset`) ?? 0;
+    return { referencePath, multiplier: -gearing, offset: -offset };
+  }
+  return undefined;
+}
+
+/**
+ * Instance names of applied `PhysxMimicJointAPI:<dof>` schemas (`rotX` …),
+ * also recovered from `physxMimicJoint:*:referenceJoint` relationships for
+ * assets that author the properties without listing the API.
+ */
+function physxMimicInstances(prim: Prim): string[] {
+  const out = new Set<string>();
+  for (const schema of prim.GetAppliedSchemas()) {
+    if (schema.startsWith(`${PHYSX_MIMIC_API}:`)) out.add(schema.slice(PHYSX_MIMIC_API.length + 1));
+  }
+  for (const relationship of prim.GetRelationships()) {
+    const match = /^physxMimicJoint:([^:]+):referenceJoint$/.exec(relationship.GetName());
+    if (match) out.add(match[1]!);
+  }
+  return [...out];
 }
 
 /** Read `UsdPhysicsMassAPI` properties, or `undefined` when none are authored (M16). */

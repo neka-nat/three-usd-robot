@@ -3,8 +3,8 @@
  *
  * Builds a self-contained UsdPhysics robot layer from a {@link RobotDescription}:
  * one `Xform` prim per link placed at its **zero-pose** world transform
- * (folding joint frames root-down, `T_child = T_parent · frame0 · frame1⁻¹` —
- * see docs/export-design.md §4), one `Physics*Joint` prim per joint, and the
+ * (folding joint frames root-down, `T_child = T_parent · frame0 · frame1⁻¹`),
+ * one `Physics*Joint` prim per joint, and the
  * link meshes supplied by a {@link RobotGeometryProvider}. Initial joint values
  * author as `PhysicsJointStateAPI` opinions rather than being baked into link
  * transforms, so a re-import applies them exactly once. Values convert back
@@ -42,6 +42,7 @@ import {
   COLLISION_API,
   MASS_API,
   MESH_COLLISION_API,
+  NEWTON_MIMIC_API,
   PHYSICS_MATERIAL_API,
   RIGID_BODY_API,
   driveKindFor,
@@ -196,7 +197,21 @@ export function exportRobotUsda(
       continue;
     }
     emittedJoints.add(key);
-    children.push(buildJointPrim(jointNames.get(key)!, key, joint, linkPath, isaac, warn));
+  }
+  const jointPath = (key: string) =>
+    emittedJoints.has(key) ? `/${robotName}/${jointNames.get(key)}` : undefined;
+  for (const key of emittedJoints) {
+    children.push(
+      buildJointPrim(
+        jointNames.get(key)!,
+        key,
+        desc.joints[key]!,
+        linkPath,
+        jointPath,
+        isaac,
+        warn,
+      ),
+    );
   }
   if (looksName) {
     children.push(buildLooksPrim(looksName, materials, materialNames, materialPath));
@@ -610,6 +625,7 @@ function buildJointPrim(
   key: string,
   joint: JointDescription,
   linkPath: (key: string) => string,
+  jointPath: (key: string) => string | undefined,
   isaac: boolean,
   warn: (m: string) => void,
 ): PrimSpec {
@@ -678,6 +694,23 @@ function buildJointPrim(
       properties.push(attr(`drive:${kind}:physics:maxForce`, "float", d.maxForce));
     }
     apiSchemas.push(`PhysicsDriveAPI:${kind}`);
+  }
+
+  // Mimic constraint → NewtonMimicAPI (`follower = coef0 + coef1 · leader`),
+  // the form Isaac Sim 6 / Newton author and consume. Offset back to authored
+  // units (degrees for angular).
+  if (joint.mimic) {
+    const leaderPath = jointPath(joint.mimic.joint);
+    if (!leaderPath) {
+      warn(`joint "${key}": mimic leader "${joint.mimic.joint}" is not exported; mimic dropped`);
+    } else {
+      apiSchemas.push(NEWTON_MIMIC_API);
+      properties.push(rel("newton:mimicJoint", [leaderPath]));
+      properties.push(attr("newton:mimicCoef1", "float", joint.mimic.multiplier));
+      properties.push(
+        attr("newton:mimicCoef0", "float", jointValueFromSI(angular, joint.mimic.offset)),
+      );
+    }
   }
 
   if (isaac) {

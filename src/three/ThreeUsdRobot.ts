@@ -136,6 +136,13 @@ export class ThreeUsdRobot extends THREE.Object3D {
   private readonly jointObjects = new Map<string, JointObject>();
   private readonly linkKeyByPath = new Map<string, string>();
   private readonly jointKeyByPath = new Map<string, string>();
+  /** Mimic edges among realized joints: leader key → followers. */
+  private readonly mimicFollowers = new Map<
+    string,
+    { key: string; multiplier: number; offset: number }[]
+  >();
+  private readonly mimicLeaderByFollower = new Map<string, string>();
+  private warnedMimicDrive = false;
   private dirty = true;
 
   /** Constructed (fk rest) local matrix of every link, for baked→fk restore. */
@@ -178,8 +185,10 @@ export class ThreeUsdRobot extends THREE.Object3D {
     this.attachRoot();
     this.attachTreeEdges();
     this.attachIsolatedLinks();
+    this.registerMimicFollowers();
     this.applyStageNormalization(robot, options);
     if (options.applyInitialPose ?? true) this.applyInitialPose(robot);
+    this.propagateAllMimic();
 
     for (const [key, obj] of this.linkObjects) this.restLocal.set(key, obj.matrix.toArray());
     const debug = options.debugBakedTransforms;
@@ -215,6 +224,68 @@ export class ThreeUsdRobot extends THREE.Object3D {
       this.jointObjects.get(key)?.setValue(joint.initialValue, this.clampJointLimits);
     }
     this.dirty = true;
+  }
+
+  // -- Mimic joints ---------------------------------------------------------
+
+  /** Index the mimic edges realized in the tree (leader and follower both driven). */
+  private registerMimicFollowers(): void {
+    for (const [key, joint] of Object.entries(this.robot.joints)) {
+      const mimic = joint.mimic;
+      if (!mimic || !this.jointObjects.has(key)) continue;
+      const leaderKey = this.jointKey(mimic.joint);
+      // A leader outside the fk tree (loop joint) cannot drive; leave the
+      // follower independently commandable.
+      if (!this.jointObjects.has(leaderKey)) continue;
+      this.mimicLeaderByFollower.set(key, leaderKey);
+      const list = this.mimicFollowers.get(leaderKey) ?? [];
+      list.push({ key, multiplier: mimic.multiplier, offset: mimic.offset });
+      this.mimicFollowers.set(leaderKey, list);
+    }
+  }
+
+  /** Drive the followers of `leaderKey` from its current value (recursive, cycle-safe). */
+  private propagateMimic(leaderKey: string, visited?: Set<string>): void {
+    const followers = this.mimicFollowers.get(leaderKey);
+    if (!followers) return;
+    const leaderValue = this.jointObjects.get(leaderKey)?.value;
+    if (leaderValue === undefined) return;
+    const seen = visited ?? new Set([leaderKey]);
+    for (const { key, multiplier, offset } of followers) {
+      if (seen.has(key)) continue; // cycle — reported by the validator
+      seen.add(key);
+      this.jointObjects
+        .get(key)
+        ?.setValue(multiplier * leaderValue + offset, this.clampJointLimits);
+      this.propagateMimic(key, seen);
+    }
+  }
+
+  /** Re-derive every follower from its chain's top-most leader. */
+  private propagateAllMimic(): void {
+    for (const leaderKey of this.mimicFollowers.keys()) {
+      if (!this.mimicLeaderByFollower.has(leaderKey)) this.propagateMimic(leaderKey);
+    }
+    if (this.mimicFollowers.size > 0) this.dirty = true;
+  }
+
+  /** Whether the joint (key or prim path) is a mimic follower, driven by its leader. */
+  isMimicFollower(name: string): boolean {
+    return this.mimicLeaderByFollower.has(this.jointKey(name));
+  }
+
+  /** Keys of the mimic-follower joints (excluded from {@link getJointNames}). */
+  getMimicJointNames(): string[] {
+    return [...this.mimicLeaderByFollower.keys()];
+  }
+
+  private warnMimicDriveOnce(key: string): void {
+    if (this.warnedMimicDrive) return;
+    this.warnedMimicDrive = true;
+    const leader = this.mimicLeaderByFollower.get(key);
+    console.warn(
+      `three-usd-robot: "${key}" is a mimic follower of "${leader}" — its value derives from the leader; direct sets are ignored (warned once)`,
+    );
   }
 
   private attachRoot(): void {
@@ -302,20 +373,29 @@ export class ThreeUsdRobot extends THREE.Object3D {
 
   /**
    * Set one joint value, addressed by key or full prim path. Unknown joints
-   * are ignored. Returns whether it applied. Always restores `"fk"` display
+   * are ignored, and so are mimic followers (their value derives from the
+   * leader; a warning is logged once). Driving a leader also updates its
+   * followers. Returns whether it applied. Always restores `"fk"` display
    * mode first (see {@link setLinkTransforms}).
    */
   setJointValue(name: string, value: number): boolean {
     this.exitBakedMode();
-    const joint = this.jointObjects.get(this.jointKey(name));
+    const key = this.jointKey(name);
+    if (this.mimicLeaderByFollower.has(key)) {
+      this.warnMimicDriveOnce(key);
+      return false;
+    }
+    const joint = this.jointObjects.get(key);
     if (!joint) return false;
     joint.setValue(value, this.clampJointLimits);
+    this.propagateMimic(key);
     this.dirty = true;
     return true;
   }
 
   /**
-   * Set several joint values at once (matrix update is coalesced). Always
+   * Set several joint values at once (matrix update is coalesced). Mimic
+   * followers in the batch are skipped like in {@link setJointValue}. Always
    * restores `"fk"` display mode first, recomputing every link purely from
    * joint values — even an empty batch returns from baked playback (see
    * {@link setLinkTransforms}).
@@ -323,9 +403,15 @@ export class ThreeUsdRobot extends THREE.Object3D {
   setJointValues(values: Record<string, number>): void {
     this.exitBakedMode();
     for (const [name, value] of Object.entries(values)) {
-      const joint = this.jointObjects.get(this.jointKey(name));
+      const key = this.jointKey(name);
+      if (this.mimicLeaderByFollower.has(key)) {
+        this.warnMimicDriveOnce(key);
+        continue;
+      }
+      const joint = this.jointObjects.get(key);
       if (joint) {
         joint.setValue(value, this.clampJointLimits);
+        this.propagateMimic(key);
         this.dirty = true;
       }
     }
@@ -445,9 +531,11 @@ export class ThreeUsdRobot extends THREE.Object3D {
   /**
    * Project a link-pose batch onto the joint manifold: the closed-form 1-DOF
    * joint values that best reproduce it, plus the same residuals as
-   * {@link validateLinkTransforms}. `values` covers the articulated tree
-   * joints, keyed by joint prim path, and feeds {@link setJointValues}
-   * directly — the constraint-respecting playback of the same track:
+   * {@link validateLinkTransforms}. `values` covers the commandable
+   * articulated tree joints (mimic followers excluded — their leaders
+   * re-derive them), keyed by joint prim path, and feeds
+   * {@link setJointValues} directly — the constraint-respecting playback of
+   * the same track:
    *
    * ```ts
    * robot.setJointValues(robot.jointValuesFromLinkTransforms(poses, { previous }).values);
@@ -470,6 +558,9 @@ export class ThreeUsdRobot extends THREE.Object3D {
       }
       residuals[joint.primPath] = this.buildResidual(joint, q, rel);
       if (!this.jointObjects.get(key)?.articulated) continue;
+      // Followers are not commandable — the constraint re-derives them when
+      // the returned values are fed to setJointValues.
+      if (this.mimicLeaderByFollower.has(key)) continue;
       if (opts.clampLimits) {
         if (joint.lower !== undefined && q < joint.lower) q = joint.lower;
         if (joint.upper !== undefined && q > joint.upper) q = joint.upper;
@@ -730,9 +821,13 @@ export class ThreeUsdRobot extends THREE.Object3D {
     return Object.values(this.robot.links);
   }
 
-  /** Names of the articulated (controllable) joints. */
+  /**
+   * Names of the commandable joints — articulated tree joints minus mimic
+   * followers, whose values derive from their leader
+   * (see {@link getMimicJointNames}).
+   */
   getJointNames(): string[] {
-    return [...this.jointObjects.keys()];
+    return [...this.jointObjects.keys()].filter((key) => !this.mimicLeaderByFollower.has(key));
   }
 
   getLinkNames(): string[] {
@@ -787,11 +882,16 @@ export class ThreeUsdRobot extends THREE.Object3D {
     return null;
   }
 
-  /** Sample every animated joint at time code `t` and apply the values (an fk drive — leaves baked mode). */
+  /**
+   * Sample every animated joint at time code `t` and apply the values (an fk
+   * drive — leaves baked mode). Samples on mimic followers are ignored; the
+   * constraint re-derives them from their leader.
+   */
   setTime(t: number): void {
     this.exitBakedMode();
     for (const [key, joint] of Object.entries(this.robot.joints)) {
-      if (joint.valueSamples) this.setJointValue(key, interpolate(joint.valueSamples, t));
+      if (!joint.valueSamples || this.mimicLeaderByFollower.has(key)) continue;
+      this.setJointValue(key, interpolate(joint.valueSamples, t));
     }
   }
 

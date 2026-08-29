@@ -8,5 +8,6 @@ assets
 test
 test-assets
 docs
+.internal
 *.png
 *.mp4
