@@ -238,6 +238,56 @@ describe("mimic extraction", () => {
     expect(desc.joints.follow?.mimic?.offset).toBeCloseTo(-10 * DEG, 12); // -offset, deg→rad
   });
 
+  it("ignores a PhysX mimic authored on a dof the joint does not move about", () => {
+    // Isaac's Franka ships exactly this: `physxMimicJoint:rotX:*` on a joint
+    // that moves about another dof, and without listing the API schema.
+    const strayDof = PHYSX.replaceAll("rotZ", "rotX").replace(
+      'def PhysicsRevoluteJoint "follow" (\n        prepend apiSchemas = ["PhysxMimicJointAPI:rotX"]\n    )',
+      'def PhysicsRevoluteJoint "follow"',
+    );
+    const warnings: string[] = [];
+    const desc = extractRobotDescription(Stage.OpenFromString(strayDof), {
+      onWarn: (m) => warnings.push(m),
+    });
+    expect(desc.joints.follow?.mimic).toBeUndefined();
+    expect(warnings.some((w) => w.includes("rotX") && w.includes("rotZ"))).toBe(true);
+  });
+
+  it("reads the dof the joint moves about when several are authored", () => {
+    const both = PHYSX.replace(
+      "rel physxMimicJoint:rotZ:referenceJoint = </World/lead>",
+      "rel physxMimicJoint:rotX:referenceJoint = </World/base>\n" +
+        "        float physxMimicJoint:rotX:gearing = 5\n" +
+        "        rel physxMimicJoint:rotZ:referenceJoint = </World/lead>",
+    );
+    const warnings: string[] = [];
+    const desc = extractRobotDescription(Stage.OpenFromString(both), {
+      onWarn: (m) => warnings.push(m),
+    });
+    expect(desc.joints.follow?.mimic?.joint).toBe("lead");
+    expect(desc.joints.follow?.mimic?.multiplier).toBe(1); // the rotZ constraint
+    expect(warnings).toEqual([]);
+  });
+
+  it("ignores a mimic that reads a dof its leader does not move about", () => {
+    const withRefAxis = (axis: string) =>
+      PHYSX.replace(
+        "rel physxMimicJoint:rotZ:referenceJoint = </World/lead>",
+        `uniform token physxMimicJoint:rotZ:referenceJointAxis = "${axis}"\n        rel physxMimicJoint:rotZ:referenceJoint = </World/lead>`,
+      );
+    const warnings: string[] = [];
+    const stray = extractRobotDescription(Stage.OpenFromString(withRefAxis("rotX")), {
+      onWarn: (m) => warnings.push(m),
+    });
+    expect(stray.joints.follow?.mimic).toBeUndefined();
+    expect(warnings.some((w) => w.includes("rotX") && w.includes("lead"))).toBe(true);
+
+    // `lead` does move about rotZ, so naming it explicitly is honored.
+    const matching = extractRobotDescription(Stage.OpenFromString(withRefAxis("rotZ")));
+    expect(matching.joints.follow?.mimic?.joint).toBe("lead");
+    expect(matching.warnings).toBeUndefined();
+  });
+
   it("ignores a disabled Newton mimic", () => {
     const disabled = CHAIN.replace(
       "rel newton:mimicJoint = </World/a>",

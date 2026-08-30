@@ -121,17 +121,40 @@ export type RawJointMimic = {
   referencePath: SdfPath;
   multiplier: number;
   offset: number;
+  /**
+   * Dof of the leader the constraint reads
+   * (`physxMimicJoint:<dof>:referenceJointAxis`), when authored. PhysX-only:
+   * `NewtonMimicAPI` couples the joints' single dofs implicitly.
+   */
+  referenceDof?: string;
 };
+
+/**
+ * The `PhysxMimicJointAPI` instance a joint's own dof is keyed by — `rotZ`
+ * for a revolute joint about Z, `transX` for a prismatic one about X.
+ * `undefined` for a fixed joint, which has no dof to constrain.
+ */
+export function physxMimicDof(type: JointType, axis: Axis): string | undefined {
+  if (type === "fixed") return undefined;
+  return `${type === "prismatic" ? "trans" : "rot"}${axis}`;
+}
 
 /**
  * Read a mimic constraint off a joint prim. `NewtonMimicAPI` (Isaac Sim 6 /
  * Newton authoring: `follower = coef0 + coef1 · leader`) wins over the legacy
  * PhysX multi-apply `PhysxMimicJointAPI:<dof>`, whose constraint
  * `q_this + gearing · q_ref + offset = 0` is sign-flipped into the same form.
- * Returns `undefined` when no mimic is authored, it is disabled, or no
- * reference joint is targeted.
+ *
+ * The PhysX form is keyed by the dof it constrains, so only the `dof`
+ * instance this joint actually moves about is read — a constraint authored
+ * on any other dof names a degree of freedom the joint does not have, and
+ * the physics engines ignore it too (Isaac's Franka carries `rotX` on its
+ * prismatic finger). Callers can spot those with {@link getPhysxMimicDofs}.
+ *
+ * Returns `undefined` when no mimic is authored on that dof, it is disabled,
+ * or no reference joint is targeted.
  */
-export function getJointMimic(prim: Prim): RawJointMimic | undefined {
+export function getJointMimic(prim: Prim, dof: string | undefined): RawJointMimic | undefined {
   if (prim.HasAPI(NEWTON_MIMIC_API)) {
     if (prim.GetAttribute("newton:mimicEnabled").Get() === false) return undefined;
     const referencePath = prim.GetRelationship("newton:mimicJoint").GetTargets()[0];
@@ -142,16 +165,20 @@ export function getJointMimic(prim: Prim): RawJointMimic | undefined {
       offset: readNumber(prim, "newton:mimicCoef0") ?? 0,
     };
   }
-  for (const instance of physxMimicInstances(prim)) {
-    const referencePath = prim
-      .GetRelationship(`physxMimicJoint:${instance}:referenceJoint`)
-      .GetTargets()[0];
-    if (referencePath === undefined) continue;
-    const gearing = readNumber(prim, `physxMimicJoint:${instance}:gearing`) ?? 1;
-    const offset = readNumber(prim, `physxMimicJoint:${instance}:offset`) ?? 0;
-    return { referencePath, multiplier: -gearing, offset: -offset };
-  }
-  return undefined;
+  if (dof === undefined) return undefined;
+  const referencePath = prim
+    .GetRelationship(`physxMimicJoint:${dof}:referenceJoint`)
+    .GetTargets()[0];
+  if (referencePath === undefined) return undefined;
+  const gearing = readNumber(prim, `physxMimicJoint:${dof}:gearing`) ?? 1;
+  const offset = readNumber(prim, `physxMimicJoint:${dof}:offset`) ?? 0;
+  const referenceDof = prim.GetAttribute(`physxMimicJoint:${dof}:referenceJointAxis`).Get();
+  return {
+    referencePath,
+    multiplier: -gearing,
+    offset: -offset,
+    ...(typeof referenceDof === "string" ? { referenceDof } : {}),
+  };
 }
 
 /**
@@ -159,7 +186,7 @@ export function getJointMimic(prim: Prim): RawJointMimic | undefined {
  * also recovered from `physxMimicJoint:*:referenceJoint` relationships for
  * assets that author the properties without listing the API.
  */
-function physxMimicInstances(prim: Prim): string[] {
+export function getPhysxMimicDofs(prim: Prim): string[] {
   const out = new Set<string>();
   for (const schema of prim.GetAppliedSchemas()) {
     if (schema.startsWith(`${PHYSX_MIMIC_API}:`)) out.add(schema.slice(PHYSX_MIMIC_API.length + 1));

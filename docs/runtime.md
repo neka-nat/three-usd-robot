@@ -78,6 +78,15 @@ robot.getMimicJointNames(); // ["right_finger_joint"]
 robot.getJointObject("right_finger_joint")?.mimic; // { joint, multiplier, offset } (SI)
 ```
 
+The PhysX form is keyed by dof on both ends — the `PhysxMimicJointAPI:<dof>`
+instance names the dof of the *follower* being constrained, and
+`referenceJointAxis` the leader's dof it reads. A revolute or prismatic joint
+moves about exactly one dof, so a constraint naming any other one asks for a
+degree of freedom the joint does not have: it is reported and the joints stay
+independent, as the physics engines read it. (Isaac's Franka authors
+`physxMimicJoint:rotX` on its prismatic finger, which is why that asset loads
+with both fingers separately drivable.)
+
 Chained mimics propagate; cycles and kind mismatches (angular vs linear) are
 diagnosed by `validateRobotDescription` (`mimic-*` codes) and dropped with a
 warning at extraction. `RobotBuilder.addRevolute/PrismaticJoint` take a

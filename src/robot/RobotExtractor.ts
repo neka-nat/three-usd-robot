@@ -21,9 +21,11 @@ import {
   getJointStatePosition,
   getJointType,
   getMassProperties,
+  getPhysxMimicDofs,
   hasArticulationRootAPI,
   hasCollisionAPI,
   hasRigidBodyAPI,
+  physxMimicDof,
 } from "../schemas/usdPhysics.js";
 import type { Prim } from "../usd/Prim.js";
 import type { Stage } from "../usd/Stage.js";
@@ -234,16 +236,48 @@ function buildJoint(
   }
 
   // Mimic constraint (NewtonMimicAPI / PhysxMimicJointAPI), offset SI-normalized.
-  const mimic = getJointMimic(prim);
+  // The PhysX form is keyed by dof on both ends: the instance names the dof of
+  // *this* joint being constrained, `referenceJointAxis` the leader's. A joint
+  // moves about one dof, so a constraint that names another one asks for a
+  // degree of freedom that does not exist — report it rather than couple the
+  // joints anyway (Isaac's Franka authors its prismatic fingers on `rotX`).
+  const dof = physxMimicDof(type, joint.axis);
+  const mimic = getJointMimic(prim, dof);
   if (mimic) {
-    joint.mimic = {
-      joint: jointKeyByPath.get(mimic.referencePath) ?? mimic.referencePath,
-      multiplier: mimic.multiplier,
-      offset: jointValueToSI(angular, mimic.offset),
-    };
+    const leaderDof = jointDof(prim, mimic.referencePath);
+    if (
+      mimic.referenceDof !== undefined &&
+      leaderDof !== undefined &&
+      mimic.referenceDof !== leaderDof
+    ) {
+      warn(
+        `${path}: mimic reads "${mimic.referencePath}" on \`${mimic.referenceDof}\`, which is not the dof it moves about (\`${leaderDof}\`); ignoring`,
+      );
+    } else {
+      joint.mimic = {
+        joint: jointKeyByPath.get(mimic.referencePath) ?? mimic.referencePath,
+        multiplier: mimic.multiplier,
+        offset: jointValueToSI(angular, mimic.offset),
+      };
+    }
+  } else if (dof !== undefined) {
+    const authored = getPhysxMimicDofs(prim).filter((d) => d !== dof);
+    if (authored.length > 0) {
+      warn(
+        `${path}: mimic authored on \`${authored.join("`, `")}\` but the joint moves about \`${dof}\`; ignoring`,
+      );
+    }
   }
 
   return joint;
+}
+
+/** The dof a joint prim elsewhere in the stage moves about, for mimic checks. */
+function jointDof(from: Prim, path: string): string | undefined {
+  const prim = from.GetStage().GetPrimAtPath(path);
+  if (!prim) return undefined;
+  const type = getJointType(prim);
+  return type ? physxMimicDof(type, getJointAxis(prim)) : undefined;
 }
 
 /**
