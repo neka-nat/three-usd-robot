@@ -7,6 +7,7 @@ import {
   serializeUsda,
   type ThreeUsdRobot,
   ThreeUsdRobotLoader,
+  type UsdBoundCamera,
   writeUsdz,
 } from "three-usd-robot";
 import { createJointSliderPanel } from "three-usd-robot/extras";
@@ -169,6 +170,26 @@ let robot: ThreeUsdRobot | null = null;
 let tick: (() => void) | undefined;
 let jointFolder: GUI | undefined;
 let playbackFolder: GUI | undefined;
+let cameraFolder: GUI | undefined;
+
+/** Snap the orbit camera to a USD camera's pose and lens (fov/near/far). */
+function viewFromUsdCamera(usdCam: UsdBoundCamera) {
+  robot?.updateMatrixWorld(true);
+  const position = usdCam.getWorldPosition(new THREE.Vector3());
+  const direction = usdCam.getWorldDirection(new THREE.Vector3());
+  camera.position.copy(position);
+  if ((usdCam as THREE.PerspectiveCamera).isPerspectiveCamera) {
+    const persp = usdCam as THREE.PerspectiveCamera;
+    camera.fov = persp.fov;
+    camera.near = persp.near;
+    camera.far = persp.far;
+  }
+  camera.updateProjectionMatrix();
+  // Orbit about the focus distance when authored, else a point 1 m ahead.
+  const focus = (usdCam as THREE.PerspectiveCamera).focus;
+  controls.target.copy(position).addScaledVector(direction, focus > 0 ? focus : 1);
+  controls.update();
+}
 let treePanel: UsdTreePanel | undefined;
 
 // ---------------------------------------------------------------------------
@@ -310,8 +331,10 @@ async function load(url: string) {
   treePanel = undefined;
   jointFolder?.destroy();
   playbackFolder?.destroy();
+  cameraFolder?.destroy();
   jointFolder = undefined;
   playbackFolder = undefined;
+  cameraFolder = undefined;
 
   try {
     // Isaac assets are variant-driven and multi-layer; the loader composes them.
@@ -346,6 +369,17 @@ async function load(url: string) {
 
     jointFolder = gui.addFolder("Joints");
     const panel = createJointSliderPanel(next, jointFolder);
+
+    // USD cameras (sensor or authored viewpoints): jump the viewer into them.
+    if (next.cameras.length > 0) {
+      cameraFolder = gui.addFolder("Cameras");
+      for (const usdCam of next.cameras) {
+        cameraFolder
+          .add({ view: () => viewFromUsdCamera(usdCam) }, "view")
+          .name(usdCam.name || (usdCam.userData.primPath as string));
+      }
+      cameraFolder.close();
+    }
     const lightNote =
       next.lights.length + next.domeLights.length > 0
         ? `, ${next.lights.length} lights${next.domeLights.length > 0 ? " + dome" : ""}`

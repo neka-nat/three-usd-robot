@@ -151,6 +151,24 @@ with one call — `applyUsdEnvironment(robot, scene)` from
 `three-usd-robot/rendering`. Details, mappings and calibration guidance in
 [Lighting](./lighting.md).
 
+## Cameras (UsdGeomCamera)
+
+`Camera` prims bind by default onto `robot.cameras` (`loadCameras: false` to
+opt out), placed in the hierarchy so a wrist or sensor camera follows the
+joints. USD and Three.js share the −Z-forward / +Y-up camera frame; film-back
+metrics (`focalLength` / apertures, in mm) become the FOV and aspect,
+clipping range and focus distance are normalized to world units like
+everything else, and `projection = "orthographic"` maps to an
+`OrthographicCamera` (apertures are tenths of a stage unit there). Fit a
+bound camera to your canvas with
+`conformCameraAspect(camera, width / height, policy?)` — the UsdRender
+conform policies, `"expandAperture"` by default — and for authored-exposure
+workflows feed `computeCameraExposureScale(camera.userData.usdCamera)` (the
+USD 24.11 linear exposure formula; unauthored cameras yield `2^exposure`)
+into `renderer.toneMappingExposure`. Depth of field is not simulated —
+`fStop` / `focusDistance` are surfaced on `userData.usdCamera` (and
+`camera.focus`) for your own bokeh pass.
+
 ## Joint slider panel (lil-gui)
 
 ```ts

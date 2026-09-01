@@ -10,6 +10,7 @@ import { CrateReader } from "../usd/crate/CrateReader.js";
 import { crateToUsdaFile } from "../usd/crate/toUsdaFile.js";
 import { loadMdlModules } from "../usd/mdl/loadMdlModules.js";
 import { isZip, openUsdz } from "../usd/usdz.js";
+import { bindCameras } from "./CameraBinding.js";
 import { bindLights } from "./LightBinding.js";
 import { type MaterialFactory, bindRobotMeshes, bindSceneMeshes } from "./MeshBinding.js";
 import { createTextureProvider } from "./TextureBinding.js";
@@ -37,6 +38,12 @@ export type ThreeUsdRobotLoaderOptions = {
    * {@link ThreeUsdRobot.lights}; DomeLights on {@link ThreeUsdRobot.domeLights}.
    */
   loadLights?: boolean;
+  /**
+   * Bind `UsdGeomCamera` prims into the hierarchy (M27, default `true`) —
+   * they land on {@link ThreeUsdRobot.cameras}, link-mounted sensor cameras
+   * following the joints.
+   */
+  loadCameras?: boolean;
   /**
    * Multiplies every light's authored emission (`intensity × 2^exposure`,
    * default `1`). Stages authored in Omniverse/RTX photometric units
@@ -258,6 +265,11 @@ export class ThreeUsdRobotLoader {
       });
       robot3d.lights = bound.lights;
       robot3d.domeLights = bound.domes;
+    }
+    if (this.options.loadCameras ?? true) {
+      robot3d.cameras = bindCameras(stage, robot3d, {
+        ...(onWarn ? { onWarn } : {}),
+      });
     }
     return robot3d;
   }

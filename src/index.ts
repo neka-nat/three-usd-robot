@@ -11,6 +11,13 @@ export { PACKAGE_NAME, VERSION } from "./version.js";
 
 // Three.js runtime
 export { axisVector } from "./three/axis.js";
+export {
+  type AspectConformPolicy,
+  type BindCamerasOptions,
+  bindCameras,
+  conformCameraAspect,
+  type UsdBoundCamera,
+} from "./three/CameraBinding.js";
 export { JointObject } from "./three/JointObject.js";
 export {
   type BindLightsOptions,

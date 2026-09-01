@@ -127,6 +127,7 @@ await applyUsdEnvironment(robot, scene, { background: true });
 
 ## Out of scope (for now)
 
-`UsdGeomCamera` (M27), tone-mapping / exposure presets (M28), mesh lights
-(`LightAPI` on gprims), light filters and linking, non-latlong dome texture
-formats, UDIM texture sets beyond the tile-1001 fallback.
+Tone-mapping / exposure presets (M28), mesh lights (`LightAPI` on gprims),
+light filters and linking, non-latlong dome texture formats, UDIM texture
+sets beyond the tile-1001 fallback. `UsdGeomCamera` support is in the
+[runtime guide](./runtime.md#cameras-usdgeomcamera).

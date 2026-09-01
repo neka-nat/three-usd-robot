@@ -9,11 +9,11 @@
  * transform. Up-axis and unit normalization then apply at the root as usual.
  *
  * DomeLights create no Three.js light: they are collected on
- * {@link ThreeUsdRobot.domeLights} for IBL application (environment maps, M26).
+ * {@link ThreeUsdRobot.domeLights}, to be applied as the scene environment by
+ * `applyUsdEnvironment` from `three-usd-robot/rendering` (M26).
  */
 
 import * as THREE from "three";
-import { type Mat4, identity4, multiply } from "../kinematics/transforms.js";
 import { isNonVisualPurpose } from "../schemas/usdGeom.js";
 import {
   type LightDescription,
@@ -23,8 +23,9 @@ import {
 } from "../schemas/usdLux.js";
 import type { Prim } from "../usd/Prim.js";
 import type { Stage } from "../usd/Stage.js";
-import { computeLocalTransform, computeWorldTransform } from "../usd/xformOps.js";
+import { computeWorldTransform } from "../usd/xformOps.js";
 import type { ThreeUsdRobot } from "./ThreeUsdRobot.js";
+import { attachAtPrim, collectAnchors, worldScaleOf } from "./stageAnchors.js";
 
 export type BindLightsOptions = {
   /**
@@ -53,7 +54,7 @@ export type BoundLights = {
    * {@link LightDescription}).
    */
   lights: THREE.Light[];
-  /** DomeLights parsed but not realized — IBL environment application is M26. */
+  /** DomeLights parsed but not realized — apply via `applyUsdEnvironment` (M26). */
   domes: LightDescription[];
 };
 
@@ -80,15 +81,9 @@ export function bindLights(
     options.onWarn?.(message);
   };
 
-  // primPath → already-created object (scenery groups, gprims, link frames):
-  // the deepest such ancestor anchors a light so it inherits that subtree's
-  // motion. Links index by their own primPath too.
-  const anchors = new Map<string, THREE.Object3D>();
-  robot3d.traverse((object) => {
-    const path = (object.userData as { primPath?: unknown }).primPath;
-    if (typeof path === "string" && !anchors.has(path)) anchors.set(path, object);
-  });
-  for (const [path, link] of robot3d.getLinkObjectsByPath()) anchors.set(path, link);
+  // The deepest already-bound ancestor (scenery group, gprim, link frame)
+  // anchors each light so it inherits that subtree's motion.
+  const anchors = collectAnchors(robot3d);
 
   const rootScale = robot3d.scale.x || 1;
   let metrics: { center: THREE.Vector3; radius: number } | null = null;
@@ -123,7 +118,7 @@ export function bindLights(
       domes.push(desc);
       warnOnce(
         "DomeLight",
-        `DomeLight ${desc.primPath} is surfaced on robot.domeLights but not yet applied as an environment map (IBL is M26)`,
+        `DomeLight ${desc.primPath} is surfaced on robot.domeLights — apply it as the scene environment with applyUsdEnvironment from three-usd-robot/rendering`,
       );
       continue;
     }
@@ -136,11 +131,7 @@ export function bindLights(
     light.userData.primPath = desc.primPath;
     light.userData.usdLight = desc;
 
-    const anchor = findAnchor(prim, anchors);
-    light.matrixAutoUpdate = false;
-    light.matrix.fromArray(transformFrom(anchor?.prim ?? null, prim));
-    light.matrixWorldNeedsUpdate = true;
-    (anchor?.object ?? robot3d).add(light);
+    attachAtPrim(light, prim, anchors, robot3d);
 
     if (shadows) configureShadow(light, desc, prim, rootScale, robot3d, sceneMetrics);
     lights.push(light);
@@ -275,45 +266,4 @@ function configureShadow(
     shadow.camera.updateProjectionMatrix();
     shadow.mapSize.set(512, 512);
   }
-}
-
-/** The deepest ancestor prim that already has a Three.js object to anchor to. */
-function findAnchor(
-  prim: Prim,
-  anchors: Map<string, THREE.Object3D>,
-): { object: THREE.Object3D; prim: Prim } | null {
-  for (let p = prim.GetParent(); p && !p.IsPseudoRoot(); p = p.GetParent()) {
-    const object = anchors.get(p.GetPath());
-    if (object) return { object, prim: p };
-  }
-  return null;
-}
-
-/**
- * Accumulated local transform from `anchorPrim` (exclusive) down to `prim`
- * (inclusive); from the stage root when `anchorPrim` is `null`.
- */
-function transformFrom(anchorPrim: Prim | null, prim: Prim): Mat4 {
-  const stop = anchorPrim?.GetPath();
-  const chain: Prim[] = [];
-  for (
-    let p: Prim | null = prim;
-    p && !p.IsPseudoRoot() && p.GetPath() !== stop;
-    p = p.GetParent()
-  ) {
-    chain.push(p);
-  }
-  chain.reverse();
-  let m = identity4();
-  for (const link of chain) m = multiply(m, computeLocalTransform(link).matrix);
-  return m;
-}
-
-/** Uniform-ish world scale at `prim`: root normalization × the prim chain's scale. */
-function worldScaleOf(prim: Prim, rootScale: number): number {
-  const m = computeWorldTransform(prim);
-  const sx = Math.hypot(m[0]!, m[1]!, m[2]!);
-  const sy = Math.hypot(m[4]!, m[5]!, m[6]!);
-  const sz = Math.hypot(m[8]!, m[9]!, m[10]!);
-  return rootScale * ((sx + sy + sz) / 3);
 }

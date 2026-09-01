@@ -172,6 +172,12 @@ export {
   iterDescendants,
 } from "./schemas/usdGeom.js";
 export {
+  type CameraDescription,
+  computeCameraExposureScale,
+  isCamera,
+  readCameraDescription,
+} from "./schemas/usdGeomCamera.js";
+export {
   colorTemperatureToRgb,
   getLightKind,
   isLight,

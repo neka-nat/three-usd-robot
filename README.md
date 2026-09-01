@@ -32,6 +32,9 @@ exported back to `.usda` / `.usdz` in the browser.
   cones, ShadowAPI) become Three.js lights with shadows preconfigured, and
   DomeLights become HDRI environment lighting via
   `three-usd-robot/rendering`.
+- **Cameras** — `UsdGeomCamera` prims (film-back FOV, clipping, orthographic,
+  exposure metadata) become Three.js cameras riding the joint hierarchy —
+  view a cell through its authored sensor cameras.
 - **Animation** — plays back time-sampled joint trajectories, and replays
   baked body-transform recordings through `setLinkTransforms` with
   constraint diagnostics.
@@ -95,7 +98,7 @@ robotics-style Z-up world. Details in the [runtime guide](./docs/runtime.md).
 
 | Doc | Contents |
 | --- | --- |
-| [Runtime guide](./docs/runtime.md) | Input sources, up-axis & units, naming contract, mimic joints, viewer helpers & ghosts, static scenes, joint sliders, React Three Fiber, using the core without Three.js |
+| [Runtime guide](./docs/runtime.md) | Input sources, up-axis & units, naming contract, mimic joints, viewer helpers & ghosts, static scenes, lights & cameras, joint sliders, React Three Fiber, using the core without Three.js |
 | [Materials](./docs/materials.md) | UsdPreviewSurface fidelity, Omniverse MDL family mappings, MaterialX, optional TSL graph execution (WebGPU) |
 | [Lighting](./docs/lighting.md) | UsdLux → Three.js lights, DomeLight → IBL environment, shadow defaults, intensity calibration for Omniverse assets |
 | [Animation & recorded playback](./docs/recorded-playback.md) | Time-sampled trajectories, baked body-transform recordings, constraint diagnostics & joint projection |

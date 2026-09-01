@@ -15,6 +15,7 @@ import type { KinematicTree } from "../robot/buildKinematicTree.js";
 import type { LightDescription } from "../schemas/usdLux.js";
 import type { AssetResolver } from "../usd/AssetResolver.js";
 import type { Stage } from "../usd/Stage.js";
+import type { UsdBoundCamera } from "./CameraBinding.js";
 import { JointObject } from "./JointObject.js";
 import { LinkObject } from "./LinkObject.js";
 
@@ -146,6 +147,14 @@ export class ThreeUsdRobot extends THREE.Object3D {
    * `applyUsdEnvironment` from `three-usd-robot/rendering` (M26).
    */
   domeLights: LightDescription[] = [];
+  /**
+   * `UsdGeomCamera` prims bound from the stage (M27), hierarchy-attached so a
+   * sensor camera on a link follows the joints. Each carries
+   * `userData.primPath` and `userData.usdCamera`; fit one to a viewport with
+   * `conformCameraAspect`. Populated by {@link ThreeUsdRobotLoader} unless
+   * `loadCameras: false`.
+   */
+  cameras: UsdBoundCamera[] = [];
   /**
    * Asset-resolution context captured at load (M26) — lets
    * `three-usd-robot/rendering` fetch referenced images (dome HDRIs, including
