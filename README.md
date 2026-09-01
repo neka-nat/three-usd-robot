@@ -29,8 +29,9 @@ exported back to `.usda` / `.usdz` in the browser.
   graph execution on WebGPU) and textures; up-axis and units normalized
   automatically. Articulation-free stages load as static scenes.
 - **Lighting** — `UsdLux` lights (distant / sphere / rect / disk, ShapingAPI
-  cones, ShadowAPI) become Three.js lights with shadows preconfigured;
-  DomeLights are surfaced for IBL.
+  cones, ShadowAPI) become Three.js lights with shadows preconfigured, and
+  DomeLights become HDRI environment lighting via
+  `three-usd-robot/rendering`.
 - **Animation** — plays back time-sampled joint trajectories, and replays
   baked body-transform recordings through `setLinkTransforms` with
   constraint diagnostics.
@@ -96,7 +97,7 @@ robotics-style Z-up world. Details in the [runtime guide](./docs/runtime.md).
 | --- | --- |
 | [Runtime guide](./docs/runtime.md) | Input sources, up-axis & units, naming contract, mimic joints, viewer helpers & ghosts, static scenes, joint sliders, React Three Fiber, using the core without Three.js |
 | [Materials](./docs/materials.md) | UsdPreviewSurface fidelity, Omniverse MDL family mappings, MaterialX, optional TSL graph execution (WebGPU) |
-| [Lighting](./docs/lighting.md) | UsdLux → Three.js lights, shadow defaults, intensity calibration for Omniverse assets |
+| [Lighting](./docs/lighting.md) | UsdLux → Three.js lights, DomeLight → IBL environment, shadow defaults, intensity calibration for Omniverse assets |
 | [Animation & recorded playback](./docs/recorded-playback.md) | Time-sampled trajectories, baked body-transform recordings, constraint diagnostics & joint projection |
 | [Exporting USD](./docs/export.md) | Re-export, `RobotBuilder` authoring, simulation-ready assets (mass / collision / Isaac Robot Schema), USDZ packaging |
 

@@ -146,7 +146,9 @@ scene geometry automatically, with the same unit / up-axis normalization; pass
 they light the robot — and land on `robot.lights` (DomeLights on
 `robot.domeLights`), attached so link-mounted lights move with the joints.
 Shadows come preconfigured; Omniverse-authored stages usually want
-`lightIntensityScale: 0.001`. Details, mappings and calibration guidance in
+`lightIntensityScale: 0.001`. A DomeLight becomes HDRI environment lighting
+with one call — `applyUsdEnvironment(robot, scene)` from
+`three-usd-robot/rendering`. Details, mappings and calibration guidance in
 [Lighting](./lighting.md).
 
 ## Joint slider panel (lil-gui)

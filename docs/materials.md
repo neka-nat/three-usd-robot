@@ -76,4 +76,5 @@ an MDL SDK-class compiler); unknown MDL materials fall back to the OmniPBR
 mapping (and unknown `ND_*` surface shaders to the UsdPreviewSurface reads)
 with a warning. Not yet supported: collection-based material bindings, and
 the exotic curve schemas (`NurbsCurves`, `HermiteCurves`, `NurbsPatch`)
-which load with a warning and are skipped.
+which load with a warning and are skipped. `<UDIM>` texture paths resolve to
+their first tile (1001) with a warning; full UDIM sets are out of scope.

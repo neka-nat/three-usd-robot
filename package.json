@@ -44,6 +44,10 @@
       "types": "./dist/nodes.d.ts",
       "import": "./dist/nodes.js"
     },
+    "./rendering": {
+      "types": "./dist/rendering.d.ts",
+      "import": "./dist/rendering.js"
+    },
     "./react": {
       "types": "./dist/react.d.ts",
       "import": "./dist/react.js"

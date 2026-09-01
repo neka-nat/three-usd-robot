@@ -2,7 +2,8 @@
  * M22 bundle-isolation check, run after every build: the WebGL core entries
  * (`.` / `./core` / `./helpers` / `./extras` / `./react`) must not —
  * transitively through their chunks — reference `three/webgpu`, `three/tsl`,
- * or `three/addons`. Those imports belong to the `./nodes` entry alone.
+ * or `three/addons`. Those imports belong to the `./nodes` and `./rendering`
+ * (M26) entries alone.
  */
 import { readFileSync } from "node:fs";
 import path from "node:path";
@@ -39,6 +40,10 @@ for (const entry of ["index", "core", "helpers", "extras", "react"]) {
 
 if (!FORBIDDEN.test(read("nodes.js").src)) {
   console.error("dist/nodes.js does not reference three/webgpu or three/tsl — entry wiring looks broken");
+  process.exit(1);
+}
+if (!/["']three\/addons/.test(read("rendering.js").src)) {
+  console.error("dist/rendering.js does not reference three/addons — entry wiring looks broken");
   process.exit(1);
 }
 console.log("bundle check: core entries are free of three/webgpu / three/tsl / three/addons");

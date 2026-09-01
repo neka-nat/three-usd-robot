@@ -12,6 +12,7 @@ export default defineConfig({
       { find: "three-usd-robot/extras", replacement: src("extras.ts") },
       { find: "three-usd-robot/helpers", replacement: src("helpers.ts") },
       { find: "three-usd-robot/core", replacement: src("core.ts") },
+      { find: "three-usd-robot/rendering", replacement: src("rendering.ts") },
       { find: "three-usd-robot", replacement: src("index.ts") },
     ],
   },

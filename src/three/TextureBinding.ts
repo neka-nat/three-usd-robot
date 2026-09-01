@@ -41,9 +41,17 @@ const DEG2RAD = Math.PI / 180;
  * against `baseUrl`. Image bytes are fetched once per URL (works for HTTP and
  * `.usdz` entries alike) and the decoded image is shared; each call returns a
  * distinct `THREE.Texture` carrying the requested color space / wrap / transform.
+ *
+ * `<UDIM>` paths resolve to their first tile (1001) with a one-time `onWarn`
+ * diagnostic — full UDIM sets are out of scope (M26).
  */
-export function createTextureProvider(resolver: AssetResolver, baseUrl: string): TextureProvider {
+export function createTextureProvider(
+  resolver: AssetResolver,
+  baseUrl: string,
+  onWarn?: (message: string) => void,
+): TextureProvider {
   const images = new Map<string, Promise<TexImageSource>>();
+  let warnedUdim = false;
 
   const imageFor = (url: string): Promise<TexImageSource> => {
     let p = images.get(url);
@@ -55,9 +63,17 @@ export function createTextureProvider(resolver: AssetResolver, baseUrl: string):
   };
 
   return (assetPath: string, options: TextureOptions = {}) => {
+    let path = assetPath;
+    if (/<UDIM>/i.test(path)) {
+      path = path.replace(/<UDIM>/gi, "1001");
+      if (!warnedUdim) {
+        warnedUdim = true;
+        onWarn?.(`UDIM texture sets are not supported; using tile 1001 only (e.g. ${path})`);
+      }
+    }
     let url: string;
     try {
-      url = resolver.resolve(assetPath, baseUrl);
+      url = resolver.resolve(path, baseUrl);
     } catch {
       return null;
     }

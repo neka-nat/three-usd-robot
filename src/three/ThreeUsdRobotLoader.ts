@@ -191,6 +191,12 @@ export class ThreeUsdRobotLoader {
     const tree = buildKinematicTree(robot);
     const robot3d = new ThreeUsdRobot(robot, tree, this.robotOptions());
     robot3d.stage = stage;
+    // For deferred asset fetches (M26): dome HDRIs load through the same
+    // resolver, so relative CDN paths and `.usdz` entries keep working.
+    robot3d.assetContext = { resolver, baseUrl };
+    if (this.options.lightIntensityScale !== undefined) {
+      robot3d.lightIntensityScale = this.options.lightIntensityScale;
+    }
 
     const loadVisuals = this.options.loadVisuals ?? true;
     const loadCollisions = this.options.loadCollisions ?? false;
@@ -208,7 +214,9 @@ export class ThreeUsdRobotLoader {
     const onWarn = this.options.onWarn;
     if (loadVisuals || loadCollisions || loadScene) {
       const textureProvider =
-        (this.options.loadTextures ?? true) ? createTextureProvider(resolver, baseUrl) : undefined;
+        (this.options.loadTextures ?? true)
+          ? createTextureProvider(resolver, baseUrl, onWarn)
+          : undefined;
       const curveTubes = this.options.curveTubes ?? false;
       const materialFactory = this.options.materialFactory;
       // Prefetch referenced `.mdl` modules (M20) — wrapper materials often

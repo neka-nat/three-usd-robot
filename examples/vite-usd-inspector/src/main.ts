@@ -10,6 +10,7 @@ import {
   writeUsdz,
 } from "three-usd-robot";
 import { createJointSliderPanel } from "three-usd-robot/extras";
+import { applyUsdEnvironment } from "three-usd-robot/rendering";
 import { type GizmoMode, createSelectionGizmo } from "./selectionGizmo.js";
 import { type UsdTreePanel, createUsdTreePanel } from "./usdTreePanel.js";
 
@@ -50,7 +51,18 @@ document.body.appendChild(renderer.domElement);
 RectAreaLightUniformsLib.init();
 
 const scene = new THREE.Scene();
-scene.background = new THREE.Color(0x202024);
+const DEFAULT_BACKGROUND = new THREE.Color(0x202024);
+scene.background = DEFAULT_BACKGROUND;
+
+/** Drop any DomeLight environment from a previously loaded asset. */
+function resetEnvironment() {
+  scene.environment = null;
+  scene.background = DEFAULT_BACKGROUND;
+  scene.environmentIntensity = 1;
+  scene.backgroundIntensity = 1;
+  scene.environmentRotation.set(0, 0, 0);
+  scene.backgroundRotation.set(0, 0, 0);
+}
 
 const camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.001, 1000);
 camera.position.set(2, 2, 2);
@@ -338,9 +350,26 @@ async function load(url: string) {
       next.lights.length + next.domeLights.length > 0
         ? `, ${next.lights.length} lights${next.domeLights.length > 0 ? " + dome" : ""}`
         : "";
-    setStatus(
-      `${next.robot.name} — ${next.getLinkNames().length} links, ${next.getJointNames().length} joints${lightNote}`,
-    );
+    const statusText = `${next.robot.name} — ${next.getLinkNames().length} links, ${next.getJointNames().length} joints${lightNote}`;
+    setStatus(statusText);
+
+    // DomeLight → IBL: environment map (+ background), oriented and scaled
+    // consistently with the bound lights. HDRIs can be tens of MB, so keep the
+    // viewer interactive and note the fetch in the status line.
+    resetEnvironment();
+    if (next.domeLights.length > 0) {
+      setStatus(`${statusText} — fetching dome environment…`);
+      await applyUsdEnvironment(next, scene, {
+        background: true,
+        onWarn: (m) => console.warn(`[three-usd-robot] ${m}`),
+      });
+      // The user may have switched assets while the HDRI streamed in.
+      if (robot !== next) {
+        resetEnvironment();
+        return;
+      }
+      setStatus(statusText);
+    }
 
     // Playback controls appear only for animated assets.
     const range = next.getTimeRange();

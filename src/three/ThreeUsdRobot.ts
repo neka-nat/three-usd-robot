@@ -13,6 +13,7 @@ import type {
 } from "../robot/RobotDescription.js";
 import type { KinematicTree } from "../robot/buildKinematicTree.js";
 import type { LightDescription } from "../schemas/usdLux.js";
+import type { AssetResolver } from "../usd/AssetResolver.js";
 import type { Stage } from "../usd/Stage.js";
 import { JointObject } from "./JointObject.js";
 import { LinkObject } from "./LinkObject.js";
@@ -141,9 +142,21 @@ export class ThreeUsdRobot extends THREE.Object3D {
   lights: THREE.Light[] = [];
   /**
    * DomeLights parsed from the stage (M25). Not realized as Three.js lights —
-   * they describe an image-based environment; IBL application is M26.
+   * they describe an image-based environment; apply one with
+   * `applyUsdEnvironment` from `three-usd-robot/rendering` (M26).
    */
   domeLights: LightDescription[] = [];
+  /**
+   * Asset-resolution context captured at load (M26) — lets
+   * `three-usd-robot/rendering` fetch referenced images (dome HDRIs, including
+   * entries inside a `.usdz` package). Set by {@link ThreeUsdRobotLoader}.
+   */
+  assetContext?: { resolver: AssetResolver; baseUrl: string };
+  /**
+   * The loader's `lightIntensityScale` (M26): `applyUsdEnvironment` defaults
+   * to it so the dome environment scales consistently with the bound lights.
+   */
+  lightIntensityScale?: number;
 
   private readonly linkObjects = new Map<string, LinkObject>();
   private readonly jointObjects = new Map<string, JointObject>();

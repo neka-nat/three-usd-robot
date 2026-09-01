@@ -7,6 +7,7 @@ export default defineConfig({
     helpers: "src/helpers.ts",
     extras: "src/extras.ts",
     nodes: "src/nodes.ts",
+    rendering: "src/rendering.ts",
     react: "src/react.tsx",
   },
   format: ["esm"],

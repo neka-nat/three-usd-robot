@@ -20,7 +20,7 @@ up-axis / unit normalization applies at the root. The lights land on
 | `RectLight` | `RectAreaLight`, sized in world meters (`texture:file` ignored) |
 | `DiskLight` | `RectAreaLight` of side 2r, emission × π⁄4 (area-matched approximation) |
 | `CylinderLight` | `PointLight` approximation (warned once) |
-| `DomeLight` / `DomeLight_1` | no Three.js light — collected on `robot.domeLights` for IBL / environment-map application (M26) |
+| `DomeLight` / `DomeLight_1` | no Three.js light — collected on `robot.domeLights`; realized as the scene environment by `applyUsdEnvironment` (below) |
 | `PortalLight`, `GeometryLight` | skipped with a warning |
 
 Inputs read the `inputs:` namespace first and fall back to the pre-21.02
@@ -78,6 +78,44 @@ renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 ```
 
+## DomeLight → environment (IBL)
+
+A `DomeLight` is the scene's environment rather than a discrete light, and
+`scene.environment` is scene state the loader cannot reach — so realizing it
+is one explicit call, from the `three-usd-robot/rendering` entry (which,
+like `/nodes`, is split off because it imports three's addons):
+
+```ts
+import { applyUsdEnvironment } from "three-usd-robot/rendering";
+
+const robot = await new ThreeUsdRobotLoader({ lightIntensityScale: 0.001 }).loadAsync(url);
+scene.add(robot);
+await applyUsdEnvironment(robot, scene, { background: true });
+```
+
+- **Textures** — `.hdr` (Radiance) and `.exr` decode to float equirectangular
+  data textures; other formats decode as LDR images (browser only). Fetching
+  goes through the robot's captured asset context, so relative CDN paths and
+  images inside a `.usdz` package both work. Three prefilters equirectangular
+  environments itself — no PMREM setup. A dome with no texture (or one that
+  fails to fetch/decode, with a warning) becomes a uniform environment of the
+  dome's color. `texture:format` values other than `latlong` / `automatic`
+  are sampled as latlong with a warning.
+- **Orientation** — the dome prim's rotation, the loader's up-axis
+  normalization, and the pole convention (`DomeLight_1.poleAxis`, or the
+  stage up-axis for the original schema) compose into
+  `scene.environmentRotation`: an Isaac Z-up stage lands with a level horizon,
+  and a dome yawed about stage-up spins the sky. Needs three r162+
+  (`environmentRotation`) — skipped with a warning on older peers.
+- **Intensity** — `intensity × 2^exposure × scale` goes to
+  `scene.environmentIntensity` (three r163+). The scale defaults to the
+  `lightIntensityScale` the robot was loaded with, so the environment stays
+  in balance with the bound lights; override per call with
+  `intensityScale`. Isaac's Simple Room (dome intensity 1000, scale `0.001`)
+  lands at exactly `1.0`.
+- `background: true` mirrors the same texture, rotation and intensity onto
+  `scene.background`.
+
 ## Renderer notes
 
 - `RectAreaLight` needs its LTC lookup tables once per app under WebGL:
@@ -89,7 +127,6 @@ renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 
 ## Out of scope (for now)
 
-DomeLight → environment map / IBL (M26 — the dome's texture path, format and
-pole axis are already surfaced on `robot.domeLights`), `UsdGeomCamera` (M27),
-tone-mapping / exposure presets (M28), mesh lights (`LightAPI` on gprims),
-light filters and linking.
+`UsdGeomCamera` (M27), tone-mapping / exposure presets (M28), mesh lights
+(`LightAPI` on gprims), light filters and linking, non-latlong dome texture
+formats, UDIM texture sets beyond the tile-1001 fallback.
