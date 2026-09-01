@@ -1,6 +1,7 @@
 import GUI from "lil-gui";
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+import { RectAreaLightUniformsLib } from "three/addons/lights/RectAreaLightUniformsLib.js";
 import {
   exportThreeUsdRobot,
   serializeUsda,
@@ -22,6 +23,7 @@ const PRESETS: Record<string, string> = {
   "Fanuc CRX-10iA/L": `${ISAAC}/Isaac/Robots/Fanuc/CRX10IAL/crx10ial.usd`,
   "Flexiv Rizon 4": `${ISAAC}/Isaac/Robots/Flexiv/Rizon4/flexiv_rizon4.usd`,
   "Shadow Hand (25 joints)": `${ISAAC}/Isaac/Robots/ShadowRobot/ShadowHand/shadow_hand.usd`,
+  "Simple Room (UsdLux lights)": `${ISAAC}/Isaac/Environments/Simple_Room/simple_room.usd`,
   "Factory cell (authored here)": "/factory.usda",
   "Sample arm": "/robot.usda",
   "Animated arm": "/arm_anim.usda",
@@ -40,7 +42,12 @@ const initialUrl =
 const renderer = new THREE.WebGLRenderer({ antialias: true });
 renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.setPixelRatio(window.devicePixelRatio);
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 document.body.appendChild(renderer.domElement);
+
+// RectAreaLight (USD RectLight/DiskLight) needs its LTC lookup tables in WebGL.
+RectAreaLightUniformsLib.init();
 
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x202024);
@@ -51,12 +58,30 @@ camera.position.set(2, 2, 2);
 const controls = new OrbitControls(camera, renderer.domElement);
 
 scene.add(new THREE.GridHelper(4, 8, 0x444444, 0x303030));
-scene.add(new THREE.HemisphereLight(0xffffff, 0x404040, 1.4));
+
+// Fallback rig for stages that author no UsdLux lights (most robot assets);
+// stages with their own lights switch it off after load (re-enable in the GUI).
+const fallbackLights = new THREE.Group();
+fallbackLights.name = "fallbackLights";
+fallbackLights.add(new THREE.HemisphereLight(0xffffff, 0x404040, 1.4));
 const sun = new THREE.DirectionalLight(0xffffff, 1.6);
 sun.position.set(3, 5, 2);
-scene.add(sun);
+sun.castShadow = true;
+sun.shadow.mapSize.set(2048, 2048);
+sun.shadow.normalBias = 0.02;
+fallbackLights.add(sun);
+fallbackLights.add(sun.target);
+scene.add(fallbackLights);
 
-/** Move the camera so the whole robot is in frame. */
+// Invisible ground that only renders received shadows, sized per asset.
+const shadowCatcher = new THREE.Mesh(
+  new THREE.PlaneGeometry(1, 1).rotateX(-Math.PI / 2),
+  new THREE.ShadowMaterial({ opacity: 0.35 }),
+);
+shadowCatcher.receiveShadow = true;
+scene.add(shadowCatcher);
+
+/** Move the camera so the whole robot is in frame; refit the fallback sun + ground. */
 function frame(object: THREE.Object3D) {
   object.updateMatrixWorld(true);
   const box = new THREE.Box3().setFromObject(object);
@@ -70,6 +95,21 @@ function frame(object: THREE.Object3D) {
   camera.far = radius * 100;
   camera.updateProjectionMatrix();
   controls.update();
+
+  sun.position.copy(center).add(new THREE.Vector3(1, 1.6, 0.7).setLength(radius * 3));
+  sun.target.position.copy(center);
+  const extent = radius * 1.5;
+  sun.shadow.camera.left = -extent;
+  sun.shadow.camera.right = extent;
+  sun.shadow.camera.top = extent;
+  sun.shadow.camera.bottom = -extent;
+  sun.shadow.camera.near = radius;
+  sun.shadow.camera.far = radius * 6;
+  sun.shadow.camera.updateProjectionMatrix();
+
+  // Just under the asset's lowest point, so an authored floor still wins.
+  shadowCatcher.scale.setScalar(radius * 8);
+  shadowCatcher.position.set(center.x, box.min.y - radius * 0.001, center.z);
 }
 
 /** Free the GPU resources of a robot before dropping it. */
@@ -204,6 +244,16 @@ gizmoFolder
 gizmoFolder.add(gizmoState, "pick", ["component", "mesh"]);
 gizmoFolder.add({ deselect }, "deselect").name("deselect (Esc)");
 
+const lighting = { fallback: true };
+const lightingFolder = gui.addFolder("Lighting");
+const fallbackCtrl = lightingFolder
+  .add(lighting, "fallback")
+  .name("fallback rig")
+  .onChange((on: boolean) => {
+    fallbackLights.visible = on;
+  });
+lightingFolder.close();
+
 window.addEventListener("keydown", (event) => {
   const target = event.target as HTMLElement | null;
   if (target && (/^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName) || target.isContentEditable)) {
@@ -254,7 +304,12 @@ async function load(url: string) {
   try {
     // Isaac assets are variant-driven and multi-layer; the loader composes them.
     // `loadSceneGeometry` also draws scenery that belongs to no link.
-    const next = await new ThreeUsdRobotLoader({ loadSceneGeometry: true }).loadAsync(url);
+    const next = await new ThreeUsdRobotLoader({
+      loadSceneGeometry: true,
+      // Omniverse authors photometric intensities (thousands of nits); scale
+      // them into this renderer's exposure-1 range. See docs/lighting.md.
+      ...(url.startsWith(ISAAC) ? { lightIntensityScale: 0.001 } : {}),
+    }).loadAsync(url);
     if (robot) {
       scene.remove(robot);
       dispose(robot);
@@ -264,6 +319,13 @@ async function load(url: string) {
     next.showJointAxes = true;
     frame(next);
 
+    // Stages that bring a lighting setup (a dome, or several lights) render
+    // with it; a single stray light — Franka ships one SphereLight — keeps the
+    // fallback rig too. Toggle either way from the Lighting folder.
+    lighting.fallback = next.domeLights.length === 0 && next.lights.length < 2;
+    fallbackLights.visible = lighting.fallback;
+    fallbackCtrl.updateDisplay();
+
     if (next.stage) {
       treePanel = createUsdTreePanel(treeEl, inspectorEl, next.stage, {
         onSelect: (prim) => selection.select(objectForPrim(prim.GetPath())),
@@ -272,8 +334,12 @@ async function load(url: string) {
 
     jointFolder = gui.addFolder("Joints");
     const panel = createJointSliderPanel(next, jointFolder);
+    const lightNote =
+      next.lights.length + next.domeLights.length > 0
+        ? `, ${next.lights.length} lights${next.domeLights.length > 0 ? " + dome" : ""}`
+        : "";
     setStatus(
-      `${next.robot.name} — ${next.getLinkNames().length} links, ${next.getJointNames().length} joints`,
+      `${next.robot.name} — ${next.getLinkNames().length} links, ${next.getJointNames().length} joints${lightNote}`,
     );
 
     // Playback controls appear only for animated assets.

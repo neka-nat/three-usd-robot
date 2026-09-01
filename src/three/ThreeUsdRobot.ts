@@ -12,6 +12,7 @@ import type {
   RobotDescription,
 } from "../robot/RobotDescription.js";
 import type { KinematicTree } from "../robot/buildKinematicTree.js";
+import type { LightDescription } from "../schemas/usdLux.js";
 import type { Stage } from "../usd/Stage.js";
 import { JointObject } from "./JointObject.js";
 import { LinkObject } from "./LinkObject.js";
@@ -131,6 +132,18 @@ export class ThreeUsdRobot extends THREE.Object3D {
    * {@link ThreeUsdRobotLoader}; `undefined` for programmatically-built robots.
    */
   stage?: Stage;
+  /**
+   * UsdLux lights bound from the stage (M25), already attached into this
+   * hierarchy; each carries `userData.primPath` and `userData.usdLight` (its
+   * resolved description). Populated by {@link ThreeUsdRobotLoader} unless
+   * `loadLights: false`.
+   */
+  lights: THREE.Light[] = [];
+  /**
+   * DomeLights parsed from the stage (M25). Not realized as Three.js lights —
+   * they describe an image-based environment; IBL application is M26.
+   */
+  domeLights: LightDescription[] = [];
 
   private readonly linkObjects = new Map<string, LinkObject>();
   private readonly jointObjects = new Map<string, JointObject>();

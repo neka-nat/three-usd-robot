@@ -58,6 +58,8 @@ export type BindMeshesOptions = {
   mdl?: MdlModuleProvider;
   /** Overrides material creation for mesh-like gprims (M22). */
   materialFactory?: MaterialFactory;
+  /** Flag visual meshes `castShadow` / `receiveShadow` (M25). */
+  shadows?: boolean;
 };
 
 /** Interpolation domain of a resolved primvar (UsdGeom tokens; `varying` ⇒ `vertex`). */
@@ -439,6 +441,12 @@ export type BuildGprimOptions = {
   mdl?: MdlModuleProvider;
   /** Overrides material creation for mesh-like gprims (M22). */
   materialFactory?: MaterialFactory;
+  /**
+   * Flag mesh-like gprims `castShadow` / `receiveShadow` (M25). Free until a
+   * renderer enables shadow maps; fully transparent / transmissive meshes
+   * still receive but do not cast (Three.js shadows would be opaque black).
+   */
+  shadows?: boolean;
 };
 
 /**
@@ -464,13 +472,29 @@ export function buildGprimObject(
       if (!geometry) return null;
       // The factory (M22) replaces the whole material; `null` means "not mine".
       const custom = stage && options.materialFactory ? options.materialFactory(prim, stage) : null;
-      return new THREE.Mesh(
+      const mesh = new THREE.Mesh(
         geometry,
         custom ??
           buildMeshMaterials(prim, stage, options.textureProvider, options.onWarn, options.mdl),
       );
+      if (options.shadows) applyShadowFlags(mesh);
+      return mesh;
     }
   }
+}
+
+/**
+ * Mark a mesh for shadow rendering (M25): it always receives; it casts unless
+ * every material slot is transparent or transmissive — Three.js shadow maps
+ * render such a mesh as an opaque blocker, which reads worse than no shadow.
+ */
+function applyShadowFlags(mesh: THREE.Mesh): void {
+  mesh.receiveShadow = true;
+  const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+  mesh.castShadow = materials.some((material) => {
+    const transmission = (material as THREE.MeshPhysicalMaterial).transmission ?? 0;
+    return !material.transparent && transmission === 0;
+  });
 }
 
 /**
@@ -924,6 +948,7 @@ export function bindRobotMeshes(
     ...(options.onWarn ? { onWarn: options.onWarn } : {}),
     ...(options.mdl ? { mdl: options.mdl } : {}),
     ...(options.materialFactory ? { materialFactory: options.materialFactory } : {}),
+    ...(options.shadows ? { shadows: true } : {}),
   };
 
   for (const [key, link] of Object.entries(desc.links)) {
@@ -967,6 +992,7 @@ export function bindSceneMeshes(
     onWarn?: (message: string) => void;
     mdl?: MdlModuleProvider;
     materialFactory?: MaterialFactory;
+    shadows?: boolean;
   } = {},
 ): number {
   const owned = new Set<string>();
@@ -1001,6 +1027,7 @@ export function bindSceneMeshes(
     ...(options.onWarn ? { onWarn: options.onWarn } : {}),
     ...(options.mdl ? { mdl: options.mdl } : {}),
     ...(options.materialFactory ? { materialFactory: options.materialFactory } : {}),
+    ...(options.shadows ? { shadows: true } : {}),
   };
 
   let attached = 0;
@@ -1068,7 +1095,12 @@ function attachGprim(
   object.userData.kind = kind;
   object.userData.primPath = meshPath;
   // Collision gprims are loaded hidden; reveal via `robot.showCollision = true`.
-  if (kind === "collision") object.visible = false;
+  // They stay out of shadow passes even when revealed.
+  if (kind === "collision") {
+    object.visible = false;
+    object.castShadow = false;
+    object.receiveShadow = false;
+  }
   object.matrixAutoUpdate = false;
   object.matrix.fromArray(relativeTransform(linkPrim, meshPrim));
   object.matrixWorldNeedsUpdate = true;

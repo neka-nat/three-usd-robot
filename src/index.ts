@@ -12,6 +12,11 @@ export { PACKAGE_NAME, VERSION } from "./version.js";
 // Three.js runtime
 export { axisVector } from "./three/axis.js";
 export { JointObject } from "./three/JointObject.js";
+export {
+  type BindLightsOptions,
+  bindLights,
+  type BoundLights,
+} from "./three/LightBinding.js";
 export { LinkObject } from "./three/LinkObject.js";
 export {
   type BindMeshesOptions,

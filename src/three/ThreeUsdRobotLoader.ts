@@ -10,6 +10,7 @@ import { CrateReader } from "../usd/crate/CrateReader.js";
 import { crateToUsdaFile } from "../usd/crate/toUsdaFile.js";
 import { loadMdlModules } from "../usd/mdl/loadMdlModules.js";
 import { isZip, openUsdz } from "../usd/usdz.js";
+import { bindLights } from "./LightBinding.js";
 import { type MaterialFactory, bindRobotMeshes, bindSceneMeshes } from "./MeshBinding.js";
 import { createTextureProvider } from "./TextureBinding.js";
 import { ThreeUsdRobot, type ThreeUsdRobotOptions, type WorldUpAxis } from "./ThreeUsdRobot.js";
@@ -30,6 +31,25 @@ export type ThreeUsdRobotLoaderOptions = {
   loadSceneGeometry?: boolean;
   /** Load diffuse textures referenced by materials (default `true`). */
   loadTextures?: boolean;
+  /**
+   * Bind `UsdLux` lights into the hierarchy (M25, default `true`) — even when
+   * scene geometry is off, since they light the robot. Bound lights land on
+   * {@link ThreeUsdRobot.lights}; DomeLights on {@link ThreeUsdRobot.domeLights}.
+   */
+  loadLights?: boolean;
+  /**
+   * Multiplies every light's authored emission (`intensity × 2^exposure`,
+   * default `1`). Stages authored in Omniverse/RTX photometric units
+   * (intensities in the thousands) typically want `0.001` to land in
+   * Three.js's exposure-1 range; see docs/lighting.md.
+   */
+  lightIntensityScale?: number;
+  /**
+   * Flag meshes `castShadow` / `receiveShadow` and configure light shadows per
+   * `ShadowAPI` (M25, default `true`). Costs nothing until a renderer enables
+   * shadow maps.
+   */
+  shadows?: boolean;
   /**
    * Render `BasisCurves` that author `widths` as tube meshes instead of
    * 1-px lines (default `false`, M18).
@@ -184,11 +204,12 @@ export class ThreeUsdRobotLoader {
       );
     }
     const loadScene = this.options.loadSceneGeometry ?? isStaticScene;
+    const shadows = this.options.shadows ?? true;
+    const onWarn = this.options.onWarn;
     if (loadVisuals || loadCollisions || loadScene) {
       const textureProvider =
         (this.options.loadTextures ?? true) ? createTextureProvider(resolver, baseUrl) : undefined;
       const curveTubes = this.options.curveTubes ?? false;
-      const onWarn = this.options.onWarn;
       const materialFactory = this.options.materialFactory;
       // Prefetch referenced `.mdl` modules (M20) — wrapper materials often
       // carry the whole look while the USD shader authors no inputs at all.
@@ -202,6 +223,7 @@ export class ThreeUsdRobotLoader {
           ...(onWarn ? { onWarn } : {}),
           ...(mdl ? { mdl } : {}),
           ...(materialFactory ? { materialFactory } : {}),
+          ...(shadows ? { shadows } : {}),
         });
       }
       if (loadScene) {
@@ -211,9 +233,23 @@ export class ThreeUsdRobotLoader {
           ...(onWarn ? { onWarn } : {}),
           ...(mdl ? { mdl } : {}),
           ...(materialFactory ? { materialFactory } : {}),
+          ...(shadows ? { shadows } : {}),
         });
       }
       this.warnUnsupportedGprims(stage);
+    }
+    if (this.options.loadLights ?? true) {
+      // After mesh binding: lights anchor to the mirrored scenery groups and
+      // shadow cameras fit the bound geometry (M25).
+      const bound = bindLights(stage, robot3d, {
+        ...(this.options.lightIntensityScale !== undefined
+          ? { lightIntensityScale: this.options.lightIntensityScale }
+          : {}),
+        ...(shadows ? { shadows } : {}),
+        ...(onWarn ? { onWarn } : {}),
+      });
+      robot3d.lights = bound.lights;
+      robot3d.domeLights = bound.domes;
     }
     return robot3d;
   }

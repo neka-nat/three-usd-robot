@@ -172,6 +172,15 @@ export {
   iterDescendants,
 } from "./schemas/usdGeom.js";
 export {
+  colorTemperatureToRgb,
+  getLightKind,
+  isLight,
+  isUnsupportedLight,
+  type LightDescription,
+  readLightDescription,
+  type UsdLightKind,
+} from "./schemas/usdLux.js";
+export {
   ARTICULATION_ROOT_API,
   COLLISION_API,
   driveKindFor,
