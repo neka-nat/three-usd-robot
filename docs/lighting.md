@@ -71,7 +71,8 @@ With `shadows: true` (the default):
   sizes 2048 / 1024 / 512 for distant / spot / point) — override any of it on
   `robot.lights[i].shadow` afterwards.
 
-None of this costs anything until you enable shadow maps on the renderer:
+None of this costs anything until you enable shadow maps on the renderer —
+which `applyRenderDefaults` (below) does for you, or manually:
 
 ```ts
 renderer.shadowMap.enabled = true;
@@ -116,6 +117,33 @@ await applyUsdEnvironment(robot, scene, { background: true });
 - `background: true` mirrors the same texture, rotation and intensity onto
   `scene.background`.
 
+## Render defaults (tone mapping, shadows, exposure)
+
+USD lights and HDRI domes are HDR values; three's default `NoToneMapping`
+clips them hard. `applyRenderDefaults` from `three-usd-robot/rendering`
+installs the viewer baseline in one call:
+
+```ts
+import { applyRenderDefaults } from "three-usd-robot/rendering";
+
+applyRenderDefaults(renderer); // ACES tone mapping + PCFSoft shadow maps
+applyRenderDefaults(renderer, {
+  toneMapping: "AgX", // "ACES" | "AgX" | "neutral" (r162+) | "none"
+  exposure: robot.cameras[0]?.userData.usdCamera, // number, or a UsdGeomCamera
+});
+```
+
+An `exposure` given as a camera description applies its USD 24.11 linear
+exposure scale (`computeCameraExposureScale`) — the bridge that makes a
+physically authored stage (`lightIntensityScale: 1` plus real photographic
+camera values) land in range. The helper only switches things on or assigns
+what you pass; `shadows: false` merely skips enabling shadow maps.
+
+Post-processing (GTAO / SSGI / SSR / TAA / bloom) deliberately stays out of
+the library — compose three's own passes in your app. The Vite example ships
+the recipe: `RenderPass → GTAOPass → OutputPass`, toggled from its Lighting
+panel.
+
 ## Renderer notes
 
 - `RectAreaLight` needs its LTC lookup tables once per app under WebGL:
@@ -127,7 +155,7 @@ await applyUsdEnvironment(robot, scene, { background: true });
 
 ## Out of scope (for now)
 
-Tone-mapping / exposure presets (M28), mesh lights (`LightAPI` on gprims),
-light filters and linking, non-latlong dome texture formats, UDIM texture
-sets beyond the tile-1001 fallback. `UsdGeomCamera` support is in the
-[runtime guide](./runtime.md#cameras-usdgeomcamera).
+Mesh lights (`LightAPI` on gprims), light filters and linking, non-latlong
+dome texture formats, UDIM texture sets beyond the tile-1001 fallback, and
+post-processing passes (app-side; see Render defaults above). `UsdGeomCamera`
+support is in the [runtime guide](./runtime.md#cameras-usdgeomcamera).

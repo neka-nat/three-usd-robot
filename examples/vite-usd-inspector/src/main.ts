@@ -2,6 +2,10 @@ import GUI from "lil-gui";
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { RectAreaLightUniformsLib } from "three/addons/lights/RectAreaLightUniformsLib.js";
+import { EffectComposer } from "three/addons/postprocessing/EffectComposer.js";
+import { GTAOPass } from "three/addons/postprocessing/GTAOPass.js";
+import { OutputPass } from "three/addons/postprocessing/OutputPass.js";
+import { RenderPass } from "three/addons/postprocessing/RenderPass.js";
 import {
   exportThreeUsdRobot,
   serializeUsda,
@@ -11,7 +15,11 @@ import {
   writeUsdz,
 } from "three-usd-robot";
 import { createJointSliderPanel } from "three-usd-robot/extras";
-import { applyUsdEnvironment } from "three-usd-robot/rendering";
+import {
+  applyRenderDefaults,
+  applyUsdEnvironment,
+  type ToneMappingPreset,
+} from "three-usd-robot/rendering";
 import { type GizmoMode, createSelectionGizmo } from "./selectionGizmo.js";
 import { type UsdTreePanel, createUsdTreePanel } from "./usdTreePanel.js";
 
@@ -44,8 +52,8 @@ const initialUrl =
 const renderer = new THREE.WebGLRenderer({ antialias: true });
 renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.setPixelRatio(window.devicePixelRatio);
-renderer.shadowMap.enabled = true;
-renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+// ACES tone mapping + soft shadow maps — the library's viewer defaults.
+applyRenderDefaults(renderer);
 document.body.appendChild(renderer.domElement);
 
 // RectAreaLight (USD RectLight/DiskLight) needs its LTC lookup tables in WebGL.
@@ -277,13 +285,43 @@ gizmoFolder
 gizmoFolder.add(gizmoState, "pick", ["component", "mesh"]);
 gizmoFolder.add({ deselect }, "deselect").name("deselect (Esc)");
 
-const lighting = { fallback: true };
+const lighting = {
+  fallback: true,
+  toneMapping: "ACES" as ToneMappingPreset,
+  exposure: 1,
+  ambientOcclusion: false,
+};
 const lightingFolder = gui.addFolder("Lighting");
 const fallbackCtrl = lightingFolder
   .add(lighting, "fallback")
   .name("fallback rig")
   .onChange((on: boolean) => {
     fallbackLights.visible = on;
+  });
+lightingFolder
+  .add(lighting, "toneMapping", ["ACES", "AgX", "neutral", "none"])
+  .name("tone mapping")
+  .onChange((preset: ToneMappingPreset) => {
+    applyRenderDefaults(renderer, { toneMapping: preset });
+  });
+lightingFolder.add(lighting, "exposure", 0.05, 4, 0.05).onChange((value: number) => {
+  renderer.toneMappingExposure = value;
+});
+
+// Post-processing stays app-side by design (see docs/lighting.md) — this is
+// the recipe: RenderPass → GTAOPass → OutputPass, swapped in when enabled.
+let composer: EffectComposer | null = null;
+lightingFolder
+  .add(lighting, "ambientOcclusion")
+  .name("GTAO (post)")
+  .onChange((on: boolean) => {
+    if (on && !composer) {
+      composer = new EffectComposer(renderer);
+      composer.setPixelRatio(window.devicePixelRatio);
+      composer.addPass(new RenderPass(scene, camera));
+      composer.addPass(new GTAOPass(scene, camera, window.innerWidth, window.innerHeight));
+      composer.addPass(new OutputPass());
+    }
   });
 lightingFolder.close();
 
@@ -436,13 +474,15 @@ window.addEventListener("resize", () => {
   camera.aspect = window.innerWidth / window.innerHeight;
   camera.updateProjectionMatrix();
   renderer.setSize(window.innerWidth, window.innerHeight);
+  composer?.setSize(window.innerWidth, window.innerHeight);
 });
 
 renderer.setAnimationLoop(() => {
   tick?.();
   controls.update();
   selection.update();
-  renderer.render(scene, camera);
+  if (lighting.ambientOcclusion && composer) composer.render();
+  else renderer.render(scene, camera);
 });
 
 void load(initialUrl);

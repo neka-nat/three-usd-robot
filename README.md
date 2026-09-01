@@ -88,6 +88,16 @@ robot.getJointNames(); // commandable joints
 robot.getKinematicTree(); // root, ordering, loop joints, ...
 ```
 
+`UsdLux` lights and `UsdGeomCamera` prims load with the stage; two more lines
+give the viewer a real look ([lighting guide](./docs/lighting.md)):
+
+```ts
+import { applyRenderDefaults, applyUsdEnvironment } from "three-usd-robot/rendering";
+
+applyRenderDefaults(renderer); // ACES tone mapping + soft shadow maps
+await applyUsdEnvironment(robot, scene, { background: true }); // DomeLight → HDRI environment
+```
+
 `parse` also takes in-memory content (USDA text, an `ArrayBuffer` / typed
 array / `Blob` — the format is sniffed, so a dropped `File` works as-is), and
 the loader normalizes units and up-axis for you: Isaac's Z-up assets stand
@@ -100,7 +110,7 @@ robotics-style Z-up world. Details in the [runtime guide](./docs/runtime.md).
 | --- | --- |
 | [Runtime guide](./docs/runtime.md) | Input sources, up-axis & units, naming contract, mimic joints, viewer helpers & ghosts, static scenes, lights & cameras, joint sliders, React Three Fiber, using the core without Three.js |
 | [Materials](./docs/materials.md) | UsdPreviewSurface fidelity, Omniverse MDL family mappings, MaterialX, optional TSL graph execution (WebGPU) |
-| [Lighting](./docs/lighting.md) | UsdLux → Three.js lights, DomeLight → IBL environment, shadow defaults, intensity calibration for Omniverse assets |
+| [Lighting](./docs/lighting.md) | UsdLux → Three.js lights, DomeLight → IBL environment, shadow & tone-mapping defaults, intensity calibration for Omniverse assets |
 | [Animation & recorded playback](./docs/recorded-playback.md) | Time-sampled trajectories, baked body-transform recordings, constraint diagnostics & joint projection |
 | [Exporting USD](./docs/export.md) | Re-export, `RobotBuilder` authoring, simulation-ready assets (mass / collision / Isaac Robot Schema), USDZ packaging |
 
