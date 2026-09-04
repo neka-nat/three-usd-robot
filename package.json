@@ -1,6 +1,6 @@
 {
   "name": "three-usd-robot",
-  "version": "0.13.1",
+  "version": "0.14.0",
   "description": "Kinematic OpenUSD robot loader for Three.js — load Isaac Sim / OpenUSD robot assets, extract joints and links, and control articulations in the browser.",
   "type": "module",
   "license": "MIT",
