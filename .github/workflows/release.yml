@@ -4,9 +4,16 @@ name: Release
 #   npm version patch        # bumps package.json + creates the tag
 #   git push --follow-tags
 #
-# Requires repository secret NPM_TOKEN — an npm automation token with publish
-# rights (Settings → Secrets and variables → Actions). Provenance needs a public
-# repo + npm >= 9.5; drop `--provenance` below if publishing from a private repo.
+# Authentication uses npm Trusted Publishing (OIDC) — no NPM_TOKEN secret.
+# Configure it once at npmjs.com → package → Settings → Trusted publisher:
+#   Publisher: GitHub Actions
+#   Organization / repository: neka-nat / three-usd-robot
+#   Workflow filename: release.yml
+#   Environment: (leave empty — this job does not use one)
+# Requires `id-token: write` below and npm >= 11.5.1 (installed in the job;
+# pinned to npm 11 because npm 12 needs Node >= 22.22 and this job runs Node 20).
+# Provenance attestations are generated automatically for trusted publishing,
+# so no `--provenance` flag is needed.
 
 on:
   push:
@@ -15,7 +22,7 @@ on:
 
 permissions:
   contents: write # create the GitHub Release
-  id-token: write # npm provenance (OIDC)
+  id-token: write # trusted publishing + provenance (OIDC)
 
 jobs:
   release:
@@ -28,6 +35,9 @@ jobs:
           node-version: 20
           cache: npm
           registry-url: "https://registry.npmjs.org"
+
+      - name: Update npm (trusted publishing needs >= 11.5.1)
+        run: npm install -g npm@11
 
       - name: Install dependencies
         run: npm ci
@@ -55,9 +65,7 @@ jobs:
         run: npm run build
 
       - name: Publish to npm
-        run: npm publish --provenance --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: npm publish --access public
 
       - name: Create GitHub Release
         run: gh release create "$GITHUB_REF_NAME" --verify-tag --generate-notes
