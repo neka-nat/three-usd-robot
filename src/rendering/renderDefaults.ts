@@ -26,7 +26,7 @@ export type RenderDefaultsOptions = {
    * ({@link computeCameraExposureScale}). Left untouched when omitted.
    */
   exposure?: number | CameraDescription;
-  /** Enable `PCFSoftShadowMap` shadow rendering (default `true`). */
+  /** Enable soft shadow maps (default `true`; see {@link softShadowMapType}). */
   shadows?: boolean;
   /** Receives compatibility diagnostics. */
   onWarn?: (message: string) => void;
@@ -68,8 +68,18 @@ export function applyRenderDefaults(
   }
   if (options.shadows ?? true) {
     renderer.shadowMap.enabled = true;
-    renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    renderer.shadowMap.type = softShadowMapType();
   }
+}
+
+/**
+ * The soft shadow-map type for the installed three (M29): `PCFShadowMap`
+ * filters with a Vogel disk since r182, where `PCFSoftShadowMap` became
+ * deprecated (and was removed from `WebGPURenderer` in r186); older releases
+ * keep `PCFSoftShadowMap`. `revision` is overridable for tests.
+ */
+export function softShadowMapType(revision: number = Number(THREE.REVISION)): THREE.ShadowMapType {
+  return revision >= 182 ? THREE.PCFShadowMap : THREE.PCFSoftShadowMap;
 }
 
 function resolveToneMapping(

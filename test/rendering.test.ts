@@ -36,6 +36,9 @@ ${domeBody}
 `;
 }
 
+/** three < r184 shows `environmentRotation` inverted; the library compensates (M29). */
+const ENV_SIGN = Number(THREE.REVISION) >= 184 ? 1 : -1;
+
 const HDR_DOME = domeStage(`        float inputs:intensity = 1000
         asset inputs:texture:file = @sky.hdr@`);
 
@@ -113,9 +116,11 @@ describe("applyUsdEnvironment (M26)", () => {
 
     const scene = new THREE.Scene();
     await applyUsdEnvironment(robot, scene);
-    // Stage-up yaw becomes a pure three-world Y (up) rotation.
+    // Stage-up yaw becomes a pure three-world Y (up) rotation. Up to r183
+    // three applied the Euler to the sampling vector (visible rotation =
+    // inverse), so the authored sign only lands directly from r184 (M29).
     expect(scene.environmentRotation.x).toBeCloseTo(0, 6);
-    expect(scene.environmentRotation.y).toBeCloseTo(Math.PI / 2, 6);
+    expect(scene.environmentRotation.y).toBeCloseTo(ENV_SIGN * (Math.PI / 2), 6);
     expect(scene.environmentRotation.z).toBeCloseTo(0, 6);
   });
 
@@ -133,8 +138,8 @@ describe("applyUsdEnvironment (M26)", () => {
 
     const scene = new THREE.Scene();
     await applyUsdEnvironment(robot, scene);
-    // Only the Z-up → Y-up root conversion remains.
-    expect(scene.environmentRotation.x).toBeCloseTo(-Math.PI / 2, 6);
+    // Only the Z-up → Y-up root conversion remains (sign per three release, see above).
+    expect(scene.environmentRotation.x).toBeCloseTo(ENV_SIGN * (-Math.PI / 2), 6);
   });
 
   it("falls back to the dome color when the texture cannot be fetched", async () => {

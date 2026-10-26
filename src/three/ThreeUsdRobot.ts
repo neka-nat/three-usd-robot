@@ -169,6 +169,12 @@ export class ThreeUsdRobot extends THREE.Object3D {
    * consistently with the bound lights (M26).
    */
   lightIntensityScale?: number;
+  /**
+   * The emitter model the lights were bound with (M29): `"radiance"` (UsdLux /
+   * RTX area semantics) or `"point"` (intensity pass-through) — the loader's
+   * `lightEmitterModel` with `"auto"` resolved.
+   */
+  lightEmitterModel?: "radiance" | "point";
 
   private readonly linkObjects = new Map<string, LinkObject>();
   private readonly jointObjects = new Map<string, JointObject>();

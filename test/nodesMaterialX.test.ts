@@ -56,7 +56,11 @@ function recordingProvider(calls: { path: string; options?: TextureOptions }[]):
   };
 }
 
-const constValue = (node: unknown): number => (node as { value: number }).value;
+/** Value of a constant node — r186 wraps `float(x)` in a VarNode around the ConstNode. */
+const constValue = (node: unknown): number => {
+  const n = node as { value?: number; node?: { value?: number } };
+  return (n.value ?? n.node?.value) as number;
+};
 
 describe("standard_surface → NodeMaterial (M22)", () => {
   it("builds a NodeMaterial from a noise-driven graph", () => {

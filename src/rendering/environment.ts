@@ -16,11 +16,12 @@
  */
 
 import * as THREE from "three";
+import { RoomEnvironment } from "three/addons/environments/RoomEnvironment.js";
 import { EXRLoader } from "three/addons/loaders/EXRLoader.js";
-import { RGBELoader } from "three/addons/loaders/RGBELoader.js";
 import type { LightDescription } from "../schemas/usdLux.js";
 import type { ThreeUsdRobot } from "../three/ThreeUsdRobot.js";
 import { computeWorldTransform } from "../usd/xformOps.js";
+import { decodeRadianceHdr } from "./radianceHdr.js";
 
 export type ApplyUsdEnvironmentOptions = {
   /** Also show the environment as `scene.background` (default `false`). */
@@ -34,14 +35,32 @@ export type ApplyUsdEnvironmentOptions = {
   intensityScale?: number;
   /** The dome to apply when the stage has several (default: the first). */
   dome?: LightDescription;
+  /**
+   * What to install when the stage authors no DomeLight (M30): `"room"`
+   * prefilters three's `RoomEnvironment` (a neutral studio box — needs
+   * `renderer`), a `THREE.Texture` is used as given (an equirect or PMREM
+   * texture of your own), `"none"` (default) leaves the scene untouched.
+   * Robot-only Isaac assets have no dome, and their metals and glossy
+   * plastics only read right with something to reflect.
+   */
+  fallback?: EnvironmentFallback;
+  /** The WebGL renderer that prefilters `fallback: "room"`. */
+  renderer?: THREE.WebGLRenderer;
+  /** `scene.environmentIntensity` for a fallback environment (default 1). */
+  fallbackIntensity?: number;
   /** Receives fallback/compatibility diagnostics. */
   onWarn?: (message: string) => void;
 };
 
+export type EnvironmentFallback = "none" | "room" | THREE.Texture;
+
 /** What {@link applyUsdEnvironment} applied to the scene. */
 export type UsdEnvironment = {
-  dome: LightDescription;
-  /** The environment texture — equirectangular HDR/LDR, or 1×1 dome color. */
+  /** Where the environment came from: the stage's dome, or a fallback (M30). */
+  source: "dome" | "room" | "texture";
+  /** The DomeLight realized (absent for fallbacks). */
+  dome?: LightDescription;
+  /** The environment texture — equirectangular HDR/LDR, 1×1 dome color, or the fallback. */
   texture: THREE.Texture;
   /** Environment orientation applied (identity when unsupported by the peer). */
   rotation: THREE.Euler;
@@ -63,8 +82,8 @@ export async function applyUsdEnvironment(
   options: ApplyUsdEnvironmentOptions = {},
 ): Promise<UsdEnvironment | null> {
   const dome = options.dome ?? robot.domeLights[0];
-  if (!dome) return null;
   const onWarn = options.onWarn;
+  if (!dome) return applyFallbackEnvironment(scene, options);
 
   let texture: THREE.Texture | null = null;
   if (dome.textureFile) {
@@ -98,7 +117,49 @@ export async function applyUsdEnvironment(
     setSceneEuler(scene, "backgroundRotation", rotation, undefined);
     setSceneNumber(scene, "backgroundIntensity", intensity, undefined);
   }
-  return { dome, texture, rotation, intensity };
+  return { source: "dome", dome, texture, rotation, intensity };
+}
+
+/** The dome-less branch of {@link applyUsdEnvironment} (M30). */
+function applyFallbackEnvironment(
+  scene: THREE.Scene,
+  options: ApplyUsdEnvironmentOptions,
+): UsdEnvironment | null {
+  const fallback = options.fallback ?? "none";
+  if (fallback === "none") return null;
+  let texture: THREE.Texture;
+  let source: UsdEnvironment["source"];
+  if (fallback === "room") {
+    if (!options.renderer) {
+      options.onWarn?.(
+        'fallback: "room" needs the renderer to prefilter the RoomEnvironment; no environment applied',
+      );
+      return null;
+    }
+    texture = createRoomEnvironment(options.renderer);
+    source = "room";
+  } else {
+    texture = fallback;
+    source = "texture";
+  }
+  const intensity = options.fallbackIntensity ?? 1;
+  const rotation = new THREE.Euler();
+  scene.environment = texture;
+  setSceneEuler(scene, "environmentRotation", rotation, undefined);
+  setSceneNumber(scene, "environmentIntensity", intensity, options.onWarn);
+  return { source, texture, rotation, intensity };
+}
+
+/**
+ * three's `RoomEnvironment` (a neutral studio box) prefiltered into an
+ * environment texture — the stand-in sky for stages without a DomeLight
+ * (M30). Build it once per renderer and reuse it; the caller owns disposal.
+ */
+export function createRoomEnvironment(renderer: THREE.WebGLRenderer): THREE.Texture {
+  const pmrem = new THREE.PMREMGenerator(renderer);
+  const texture = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+  pmrem.dispose();
+  return texture;
 }
 
 /**
@@ -117,13 +178,15 @@ async function loadDomeTexture(robot: ThreeUsdRobot, assetPath: string): Promise
     : new TextEncoder().encode(await context.resolver.fetchText(url));
 
   if (/\.hdr$/i.test(url)) {
-    const texData = new RGBELoader().parse(toArrayBuffer(bytes));
+    // In-house RGBE decoder (M29): independent of three's RGBELoader →
+    // HDRLoader rename in r180.
+    const image = decodeRadianceHdr(bytes);
     const texture = new THREE.DataTexture(
-      texData.data as unknown as BufferSource,
-      texData.width,
-      texData.height,
+      image.data,
+      image.width,
+      image.height,
       THREE.RGBAFormat,
-      texData.type,
+      THREE.HalfFloatType,
     );
     texture.flipY = true; // Radiance scanlines run top-down
     return finishDataTexture(texture, THREE.LinearSRGBColorSpace);
@@ -131,14 +194,15 @@ async function loadDomeTexture(robot: ThreeUsdRobot, assetPath: string): Promise
   if (/\.exr$/i.test(url)) {
     const texData = new EXRLoader().parse(toArrayBuffer(bytes));
     const texture = new THREE.DataTexture(
-      texData.data as unknown as BufferSource,
+      // Typed as a generic typed array across three releases (r186 narrowed it).
+      texData.data as unknown as Float32Array,
       texData.width,
       texData.height,
       texData.format,
       texData.type,
     );
     texture.flipY = false; // EXR rows decode bottom-up already
-    return finishDataTexture(texture, texData.colorSpace);
+    return finishDataTexture(texture, texData.colorSpace ?? THREE.LinearSRGBColorSpace);
   }
 
   const texture = new THREE.Texture(await decodeImage(bytes, url));
@@ -198,6 +262,21 @@ function domeRotation(robot: ThreeUsdRobot, dome: LightDescription): THREE.Euler
   if (pole === "Z") {
     q.multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), Math.PI / 2));
   }
+  return environmentEulerFor(q);
+}
+
+/**
+ * The `Scene.environmentRotation` / `backgroundRotation` Euler that shows the
+ * environment rotated by `visible` on the installed three (M29). Up to r183
+ * the renderer applied the Euler to the *sampling* vector, which displays the
+ * map rotated by the inverse; r184 (#33077 / #33232) aligned it with how
+ * objects rotate. `revision` is overridable for tests.
+ */
+export function environmentEulerFor(
+  visible: THREE.Quaternion,
+  revision: number = Number(THREE.REVISION),
+): THREE.Euler {
+  const q = revision >= 184 ? visible : visible.clone().invert();
   return new THREE.Euler().setFromQuaternion(q);
 }
 

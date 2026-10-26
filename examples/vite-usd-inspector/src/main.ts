@@ -60,13 +60,19 @@ document.body.appendChild(renderer.domElement);
 RectAreaLightUniformsLib.init();
 
 const scene = new THREE.Scene();
+// The composer tone-maps the clear color too (ACES crushes near-black), so
+// the post-processed path needs a lighter gray to land on the same look.
 const DEFAULT_BACKGROUND = new THREE.Color(0x202024);
+const COMPOSER_BACKGROUND = new THREE.Color(0x4a4a52);
+const defaultBackground = () =>
+  lighting.ambientOcclusion ? COMPOSER_BACKGROUND : DEFAULT_BACKGROUND;
 scene.background = DEFAULT_BACKGROUND;
 
 /** Drop any DomeLight environment from a previously loaded asset. */
 function resetEnvironment() {
   scene.environment = null;
-  scene.background = DEFAULT_BACKGROUND;
+  scene.background = defaultBackground();
+  lighting.environment = 1;
   scene.environmentIntensity = 1;
   scene.backgroundIntensity = 1;
   scene.environmentRotation.set(0, 0, 0);
@@ -84,8 +90,8 @@ scene.add(new THREE.GridHelper(4, 8, 0x444444, 0x303030));
 // stages with their own lights switch it off after load (re-enable in the GUI).
 const fallbackLights = new THREE.Group();
 fallbackLights.name = "fallbackLights";
-fallbackLights.add(new THREE.HemisphereLight(0xffffff, 0x404040, 1.4));
-const sun = new THREE.DirectionalLight(0xffffff, 1.6);
+fallbackLights.add(new THREE.HemisphereLight(0xffffff, 0x404040, 0.3)); // IBL (M30) carries the ambient
+const sun = new THREE.DirectionalLight(0xffffff, 1.0); // key light over the RoomEnvironment (M30)
 sun.position.set(3, 5, 2);
 sun.castShadow = true;
 sun.shadow.mapSize.set(2048, 2048);
@@ -132,6 +138,18 @@ function frame(object: THREE.Object3D) {
   // Just under the asset's lowest point, so an authored floor still wins.
   shadowCatcher.scale.setScalar(radius * 8);
   shadowCatcher.position.set(center.x, box.min.y - radius * 0.001, center.z);
+
+  // GTAO works in world units: a tenth of the scene radius (5 cm – 60 cm)
+  // reads as contact occlusion on a desk robot and on a room alike.
+  gtaoPass?.updateGtaoMaterial({
+    radius: THREE.MathUtils.clamp(radius * 0.1, 0.05, 0.6),
+    distanceExponent: 1,
+    thickness: 1,
+    scale: 1,
+    samples: 16,
+    distanceFallOff: 1,
+    screenSpaceRadius: false,
+  });
 }
 
 /** Free the GPU resources of a robot before dropping it. */
@@ -290,8 +308,26 @@ const lighting = {
   fallback: true,
   toneMapping: "ACES" as ToneMappingPreset,
   exposure: 1,
-  ambientOcclusion: false,
+  environment: 1,
+  // `?ao=0` starts without the GTAO composer (automation on software GL).
+  ambientOcclusion: params.get("ao") !== "0",
 };
+/**
+ * Exposure for photometric (Omniverse-scaled) stages lit by their own rig.
+ * The loader's ×0.001 keeps lights, dome and emissives in balance; this sets
+ * the absolute level. Measured with scripts/reference/compare.py against
+ * Isaac Sim's official Simple Room render: with the interior dome fraction
+ * below, the floor luminance matches within 5 % at 0.8 (M32).
+ */
+const PHOTOMETRIC_EXPOSURE = 0.8;
+/**
+ * Image-based lighting cannot be occluded by the scene: inside a closed room
+ * the dome shines through the walls at full strength, while RTX only lets it
+ * in through openings. When a stage brings fixtures (rect / disk / sphere
+ * lights) and no distant sun — an interior — the dome is applied at this
+ * fraction; the Lighting panel exposes the resulting value.
+ */
+const INTERIOR_DOME_FRACTION = 0.3;
 const lightingFolder = gui.addFolder("Lighting");
 const fallbackCtrl = lightingFolder
   .add(lighting, "fallback")
@@ -305,26 +341,57 @@ lightingFolder
   .onChange((preset: ToneMappingPreset) => {
     applyRenderDefaults(renderer, { toneMapping: preset });
   });
-lightingFolder.add(lighting, "exposure", 0.05, 4, 0.05).onChange((value: number) => {
-  renderer.toneMappingExposure = value;
-});
+const exposureCtrl = lightingFolder
+  .add(lighting, "exposure", 0.05, 4, 0.05)
+  .onChange((value: number) => {
+    renderer.toneMappingExposure = value;
+  });
+const environmentCtrl = lightingFolder
+  .add(lighting, "environment", 0, 3, 0.05)
+  .name("environment")
+  .onChange((value: number) => {
+    scene.environmentIntensity = value;
+    if (scene.background && !(scene.background as THREE.Color).isColor) {
+      scene.backgroundIntensity = value;
+    }
+  });
 
 // Post-processing stays app-side by design (see docs/lighting.md) — this is
-// the recipe: RenderPass → GTAOPass → OutputPass, swapped in when enabled.
+// the recipe: RenderPass → GTAOPass → OutputPass on an MSAA target (so the
+// anti-aliasing survives the composer), on by default since M30 — Isaac's
+// renderers always compute ambient occlusion.
 let composer: EffectComposer | null = null;
+let gtaoPass: GTAOPass | null = null;
+function ensureComposer(): EffectComposer {
+  if (!composer) {
+    const target = new THREE.WebGLRenderTarget(window.innerWidth, window.innerHeight, {
+      type: THREE.HalfFloatType,
+      samples: 4,
+    });
+    composer = new EffectComposer(renderer, target);
+    composer.setPixelRatio(window.devicePixelRatio);
+    composer.addPass(new RenderPass(scene, camera));
+    gtaoPass = new GTAOPass(scene, camera, window.innerWidth, window.innerHeight);
+    composer.addPass(gtaoPass);
+    composer.addPass(new OutputPass());
+  }
+  return composer;
+}
 lightingFolder
   .add(lighting, "ambientOcclusion")
   .name("GTAO (post)")
   .onChange((on: boolean) => {
-    if (on && !composer) {
-      composer = new EffectComposer(renderer);
-      composer.setPixelRatio(window.devicePixelRatio);
-      composer.addPass(new RenderPass(scene, camera));
-      composer.addPass(new GTAOPass(scene, camera, window.innerWidth, window.innerHeight));
-      composer.addPass(new OutputPass());
+    if (on) ensureComposer();
+    if (scene.background === DEFAULT_BACKGROUND || scene.background === COMPOSER_BACKGROUND) {
+      scene.background = defaultBackground();
     }
   });
+if (lighting.ambientOcclusion) ensureComposer();
+scene.background = defaultBackground();
 lightingFolder.close();
+
+/** The RoomEnvironment PMREM, built once, for stages without a DomeLight (M30). */
+let roomEnvironment: THREE.Texture | null = null;
 
 window.addEventListener("keydown", (event) => {
   const target = event.target as HTMLElement | null;
@@ -423,23 +490,40 @@ async function load(url: string) {
     const statusText = `${next.robot.name} — ${next.getLinkNames().length} links, ${next.getJointNames().length} joints${lightNote}`;
     setStatus(statusText);
 
+    // Stages lit by their own photometric rig sit next to Isaac's default
+    // look at a lower exposure; anything on the fallback rig stays at 1.
+    lighting.exposure =
+      !lighting.fallback && (next.lightIntensityScale ?? 1) < 1 ? PHOTOMETRIC_EXPOSURE : 1;
+    renderer.toneMappingExposure = lighting.exposure;
+    exposureCtrl.updateDisplay();
+
     // DomeLight → IBL: environment map (+ background), oriented and scaled
     // consistently with the bound lights. HDRIs can be tens of MB, so keep the
-    // viewer interactive and note the fetch in the status line.
+    // viewer interactive and note the fetch in the status line. Stages without
+    // a dome get three's RoomEnvironment instead (M30), so metals and glossy
+    // plastics have something to reflect.
     resetEnvironment();
-    if (next.domeLights.length > 0) {
-      setStatus(`${statusText} — fetching dome environment…`);
-      await applyUsdEnvironment(next, scene, {
-        background: true,
-        onWarn: (m) => console.warn(`[three-usd-robot] ${m}`),
-      });
-      // The user may have switched assets while the HDRI streamed in.
-      if (robot !== next) {
-        resetEnvironment();
-        return;
-      }
-      setStatus(statusText);
+    if (next.domeLights.length > 0) setStatus(`${statusText} — fetching dome environment…`);
+    const interior =
+      next.lights.some((l) => !(l as THREE.DirectionalLight).isDirectionalLight) &&
+      !next.lights.some((l) => (l as THREE.DirectionalLight).isDirectionalLight);
+    const env = await applyUsdEnvironment(next, scene, {
+      background: true,
+      fallback: roomEnvironment ?? "room",
+      fallbackIntensity: 0.8, // a white robot under a white studio box clips at 1
+      renderer,
+      ...(interior ? { intensityScale: (next.lightIntensityScale ?? 1) * INTERIOR_DOME_FRACTION } : {}),
+      onWarn: (m) => console.warn(`[three-usd-robot] ${m}`),
+    });
+    if (env?.source === "room") roomEnvironment = env.texture;
+    // The user may have switched assets while the HDRI streamed in.
+    if (robot !== next) {
+      resetEnvironment();
+      return;
     }
+    lighting.environment = env?.intensity ?? 1;
+    environmentCtrl.updateDisplay();
+    setStatus(statusText);
 
     // Playback controls appear only for animated assets.
     const range = next.getTimeRange();
@@ -475,24 +559,40 @@ window.addEventListener("resize", () => {
   composer?.setSize(window.innerWidth, window.innerHeight);
 });
 
-// Viewer internals for automated tooling (screenshot scripts, e2e checks).
-Object.assign(window as unknown as Record<string, unknown>, {
-  __usdViewer: {
-    scene,
-    camera,
-    controls,
-    get robot() {
-      return robot;
-    },
-  },
-});
-
-renderer.setAnimationLoop(() => {
+function renderFrame() {
   tick?.();
   controls.update();
   selection.update();
   if (lighting.ambientOcclusion && composer) composer.render();
   else renderer.render(scene, camera);
+}
+
+// Viewer internals for automated tooling (screenshot scripts, e2e checks):
+// `renderOnce()` stops the loop and draws one deterministic frame, so a
+// software-GL headless browser can read the canvas without racing it.
+Object.assign(window as unknown as Record<string, unknown>, {
+  __usdViewer: {
+    scene,
+    camera,
+    controls,
+    renderer,
+    lighting,
+    get robot() {
+      return robot;
+    },
+    get gtaoPass() {
+      return gtaoPass;
+    },
+    renderOnce() {
+      renderer.setAnimationLoop(null);
+      renderFrame();
+    },
+    resume() {
+      renderer.setAnimationLoop(renderFrame);
+    },
+  },
 });
+
+renderer.setAnimationLoop(renderFrame);
 
 void load(initialUrl);

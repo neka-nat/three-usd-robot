@@ -34,7 +34,18 @@ export type TextureOptions = {
 /** Resolve an authored texture asset path to a `THREE.Texture` (or `null`). */
 export type TextureProvider = (assetPath: string, options?: TextureOptions) => THREE.Texture | null;
 
+export type TextureProviderOptions = {
+  /**
+   * Anisotropic filtering level set on every texture (M29). Three clamps it
+   * to the device maximum at upload time, so the default of 16 simply asks
+   * for the best available — floors and panels stop blurring at grazing
+   * angles. `1` disables it.
+   */
+  anisotropy?: number;
+};
+
 const DEG2RAD = Math.PI / 180;
+const DEFAULT_ANISOTROPY = 16;
 
 /**
  * A {@link TextureProvider} backed by the {@link AssetResolver}, resolving paths
@@ -49,8 +60,10 @@ export function createTextureProvider(
   resolver: AssetResolver,
   baseUrl: string,
   onWarn?: (message: string) => void,
+  providerOptions: TextureProviderOptions = {},
 ): TextureProvider {
   const images = new Map<string, Promise<TexImageSource>>();
+  const anisotropy = Math.max(1, providerOptions.anisotropy ?? DEFAULT_ANISOTROPY);
   let warnedUdim = false;
 
   const imageFor = (url: string): Promise<TexImageSource> => {
@@ -83,6 +96,7 @@ export function createTextureProvider(
       options.colorSpace === "linear" ? THREE.NoColorSpace : THREE.SRGBColorSpace;
     texture.wrapS = toThreeWrap(options.wrapS);
     texture.wrapT = toThreeWrap(options.wrapT);
+    texture.anisotropy = anisotropy;
     if (options.channel !== undefined) texture.channel = options.channel;
     applyTransform(texture, options.transform);
 

@@ -1,7 +1,11 @@
 import * as THREE from "three";
 import { describe, expect, it } from "vitest";
 import { ThreeUsdRobotLoader } from "../src/index.js";
-import { type RenderDefaultsTarget, applyRenderDefaults } from "../src/rendering.js";
+import {
+  type RenderDefaultsTarget,
+  applyRenderDefaults,
+  softShadowMapType,
+} from "../src/rendering.js";
 
 function fakeRenderer(): RenderDefaultsTarget {
   return {
@@ -18,7 +22,8 @@ describe("applyRenderDefaults (M28)", () => {
     applyRenderDefaults(renderer);
     expect(renderer.toneMapping).toBe(THREE.ACESFilmicToneMapping);
     expect(renderer.shadowMap.enabled).toBe(true);
-    expect(renderer.shadowMap.type).toBe(THREE.PCFSoftShadowMap);
+    // PCFSoftShadowMap up to r181; PCFShadowMap (soft since r182) after (M29).
+    expect(renderer.shadowMap.type).toBe(softShadowMapType());
     expect(renderer.toneMappingExposure).toBe(0.7);
   });
 

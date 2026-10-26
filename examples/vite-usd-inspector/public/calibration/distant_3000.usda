@@ -1,0 +1,66 @@
+#usda 1.0
+(
+    defaultPrim = "Calibration"
+    metersPerUnit = 1.0
+    upAxis = "Z"
+    doc = "DistantLight 3000 (Kit default), 35 deg elevation"
+)
+
+# Light-unit calibration stage (M32): a 50 % gray Lambertian floor and sphere
+# under exactly one light, with a fixed camera. Render it in Isaac Sim (RTX)
+# and in the three-usd-robot demo from the same camera, then compare the
+# mean luminance of the floor and sphere patches (scripts/reference/compare.py).
+def Xform "Calibration"
+{
+    def Scope "Looks"
+    {
+        def Material "Gray50"
+        {
+            token outputs:surface.connect = </Calibration/Looks/Gray50/Shader.outputs:surface>
+            def Shader "Shader"
+            {
+                uniform token info:id = "UsdPreviewSurface"
+                color3f inputs:diffuseColor = (0.5, 0.5, 0.5)
+                float inputs:roughness = 0.9
+                float inputs:metallic = 0
+                token outputs:surface
+            }
+        }
+    }
+
+    def Mesh "Floor"
+    {
+        int[] faceVertexCounts = [4]
+        int[] faceVertexIndices = [0, 1, 2, 3]
+        point3f[] points = [(-5, -5, 0), (5, -5, 0), (5, 5, 0), (-5, 5, 0)]
+        normal3f[] normals = [(0, 0, 1), (0, 0, 1), (0, 0, 1), (0, 0, 1)]
+        rel material:binding = </Calibration/Looks/Gray50>
+    }
+
+    def Sphere "Ball"
+    {
+        double radius = 0.25
+        rel material:binding = </Calibration/Looks/Gray50>
+        double3 xformOp:translate = (0, 0, 0.25)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+    }
+
+    # The measuring camera: 3/4 view from 4 m, looking at the ball.
+    def Camera "MeasureCam"
+    {
+        float focalLength = 35
+        float horizontalAperture = 36
+        float verticalAperture = 24
+        float2 clippingRange = (0.1, 100)
+        matrix4d xformOp:transform = ( (0.7071, -0.7071, 0, 0), (0.3536, 0.3536, 0.8660, 0), (-0.6124, -0.6124, 0.5, 0), (-2.45, -2.45, 2.25, 1) )
+        uniform token[] xformOpOrder = ["xformOp:transform"]
+    }
+
+    def DistantLight "Sun"
+    {
+        float inputs:intensity = 3000
+        float inputs:angle = 1
+        double3 xformOp:rotateXYZ = (-35, 25, 0)
+        uniform token[] xformOpOrder = ["xformOp:rotateXYZ"]
+    }
+}

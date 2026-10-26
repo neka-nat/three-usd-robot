@@ -29,6 +29,15 @@ npm run dev
 - **vite-basic-viewer** — a **React Three Fiber** viewer: `<UsdRobot>` from
   `three-usd-robot/react` inside a `<Canvas>`, with drei `OrbitControls` / `Grid`
   / `Bounds` (auto-frame). Also accepts `?asset=<url>`.
+- **vite-webgpu-nodes** — MaterialX (`ND_*`) procedural graphs executed as TSL
+  node materials on `WebGPURenderer` (`three-usd-robot/nodes`).
+- **vite-webgpu-viewer** — the **RTX-style viewer**: `WebGPURenderer` with a
+  TSL post stack (GTAO or SSGI, screen-space reflections, TRAA, bloom, depth
+  of field) for interaction, and a progressive **path tracer**
+  (three-gpu-pathtracer, WebGPU only) for stills — Isaac Sim's "RTX –
+  Real-Time" and "RTX – Interactive" modes, side by side. Same presets and
+  `?asset=` / `?isaac=` switches as the inspector; without WebGPU it falls back
+  to WebGL 2 with the post stack and no path tracing.
 
 The loader normalizes up-axis and units, so assets appear upright with no manual
 rotation. `public/arm_anim.usda` is the arm with time-sampled joint drives,

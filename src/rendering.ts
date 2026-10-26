@@ -18,11 +18,16 @@
 
 export {
   applyUsdEnvironment,
+  createRoomEnvironment,
+  environmentEulerFor,
   type ApplyUsdEnvironmentOptions,
+  type EnvironmentFallback,
   type UsdEnvironment,
 } from "./rendering/environment.js";
+export { decodeRadianceHdr, type RadianceHdrImage } from "./rendering/radianceHdr.js";
 export {
   applyRenderDefaults,
+  softShadowMapType,
   type RenderDefaultsOptions,
   type RenderDefaultsTarget,
   type ToneMappingPreset,

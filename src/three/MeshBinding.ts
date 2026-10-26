@@ -827,10 +827,13 @@ export function buildMeshMaterial(
 
   const map = tex(bound?.colorTexture, "srgb");
   // `inputs:scale` on the diffuse texture tints the map; otherwise pass through.
+  // OmniPBR's albedo brightness / tint (M29) multiply on top.
   if (map) {
     const s = bound?.colorTexture?.scale;
     if (s) color.setRGB(s[0], s[1], s[2]);
     else color.setRGB(1, 1, 1);
+    const t = bound?.tint;
+    if (t) color.multiply(new THREE.Color(t[0], t[1], t[2]));
   }
   const normalMap = tex(bound?.normalTexture, "linear");
   const roughnessMap = tex(bound?.roughnessTexture, "linear");
@@ -840,10 +843,12 @@ export function buildMeshMaterial(
 
   // A scalar map's `inputs:scale[0]` (or an authored constant) becomes three's
   // factor; three multiplies factor × map, so default to 1 to pass it through.
+  // Unauthored constants fall back to the UsdPreviewSurface / OmniPBR spec
+  // defaults (roughness 0.5, metallic 0 — M29).
   const metalness =
-    bound?.metalness ?? bound?.metalnessTexture?.scale?.[0] ?? (metalnessMap ? 1 : 0.1);
+    bound?.metalness ?? bound?.metalnessTexture?.scale?.[0] ?? (metalnessMap ? 1 : 0);
   const roughness =
-    bound?.roughness ?? bound?.roughnessTexture?.scale?.[0] ?? (roughnessMap ? 1 : 0.8);
+    bound?.roughness ?? bound?.roughnessTexture?.scale?.[0] ?? (roughnessMap ? 1 : 0.5);
 
   const emissive = new THREE.Color(0x000000);
   if (bound?.emissiveColor) {
@@ -894,6 +899,7 @@ export function buildMeshMaterial(
       bound.clearcoat !== undefined ||
       bound.clearcoatRoughness !== undefined ||
       bound.specularColor !== undefined ||
+      bound.specularIntensity !== undefined ||
       bound.transmission !== undefined ||
       bound.clearcoatNormalTexture !== undefined);
   const material = physical
@@ -911,19 +917,38 @@ export function buildMeshMaterial(
         bound.specularColor[2],
       );
     }
+    // OmniPBR `specular_level` (M29): 0.5 ≙ three's default F0 of 4 %.
+    if (bound.specularIntensity !== undefined) material.specularIntensity = bound.specularIntensity;
     // OmniGlass (M20): a transmissive dielectric with a refraction volume.
     if (bound.transmission !== undefined) material.transmission = bound.transmission;
     if (bound.thickness !== undefined) material.thickness = bound.thickness;
     const clearcoatNormalMap = tex(bound.clearcoatNormalTexture, "linear");
-    if (clearcoatNormalMap) material.clearcoatNormalMap = clearcoatNormalMap;
+    if (clearcoatNormalMap) {
+      material.clearcoatNormalMap = clearcoatNormalMap;
+      const s = bound.clearcoatNormalScale;
+      if (s) material.clearcoatNormalScale.set(s[0], s[1]);
+    }
   }
-  if (bound?.emissiveIntensity !== undefined) material.emissiveIntensity = bound.emissiveIntensity;
-  // UsdPreviewSurface normal maps author scale (2,2,2,1) / bias (−1,−1,−1,0)
-  // to decode [0,1] → [−1,1]; three does that internally, so scale/2 is the
-  // residual normalScale (the sign carries DirectX-style green flips).
-  if (normalMap && bound?.normalTexture?.scale) {
-    material.normalScale.set(bound.normalTexture.scale[0] / 2, bound.normalTexture.scale[1] / 2);
+  if (bound?.emissiveIntensity !== undefined) {
+    material.emissiveIntensity = bound.emissiveIntensity;
+    // Photometric emission (Omniverse nits, M29) follows the stage's light
+    // calibration — the loader rescales it once `lightIntensityScale` is known.
+    if (bound.emissivePhotometric) material.userData.emissivePhotometric = true;
   }
+  if (normalMap) {
+    if (bound?.normalScale) {
+      // OmniPBR (M29): `bump_factor` with the DirectX-by-default green flip.
+      material.normalScale.set(bound.normalScale[0], bound.normalScale[1]);
+    } else if (bound?.normalTexture?.scale) {
+      // UsdPreviewSurface normal maps author scale (2,2,2,1) / bias (−1,−1,−1,0)
+      // to decode [0,1] → [−1,1]; three does that internally, so scale/2 is the
+      // residual normalScale (the sign carries DirectX-style green flips).
+      material.normalScale.set(bound.normalTexture.scale[0] / 2, bound.normalTexture.scale[1] / 2);
+    }
+  }
+  // OmniPBR `ao_to_diffuse` (M29) weights the AO map (three: aoMapIntensity).
+  if (aoMap && bound?.occlusionStrength !== undefined)
+    material.aoMapIntensity = bound.occlusionStrength;
   // Carry the USD material name so re-exports keep it (and dedupe by it).
   if (bound?.name) material.name = bound.name;
   return material;

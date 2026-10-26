@@ -22,7 +22,11 @@
     "articulation"
   ],
   "sideEffects": false,
-  "files": ["dist", "README.md", "LICENSE"],
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
@@ -92,11 +96,11 @@
     "@types/react": "^18.3.30",
     "@types/react-dom": "^18.3.7",
     "@types/react-test-renderer": "^18.3.1",
-    "@types/three": "^0.171.0",
+    "@types/three": "^0.186.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "react-test-renderer": "^18.3.1",
-    "three": "^0.171.0",
+    "three": "^0.186.1",
     "tsup": "^8.3.5",
     "tsx": "^4.23.1",
     "typescript": "^5.7.2",

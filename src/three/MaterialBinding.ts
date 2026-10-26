@@ -120,17 +120,56 @@ export type ResolvedMaterial = {
   emissiveTexture?: ResolvedTexture;
   /** OmniPBR_ClearCoat `clearcoat_normalmap_texture` (physical promotion, M20). */
   clearcoatNormalTexture?: ResolvedTexture;
+  /**
+   * Multiplier on the sampled base color — OmniPBR `albedo_brightness ×
+   * diffuse_tint` when the albedo comes from a texture (M29). Constant
+   * albedos get the adjustments folded into `color` directly.
+   */
+  tint?: Vec3;
+  /**
+   * OmniPBR `specular_level` → three `specularIntensity` (`level / 0.5`:
+   * 0.5 is the 4 % dielectric default on both sides; physical promotion, M29).
+   */
+  specularIntensity?: number;
+  /**
+   * Tangent-space normal strength and sign: OmniPBR `bump_factor` ×
+   * `flip_tangent_u` / `flip_tangent_v`. OmniPBR defaults to DirectX normal
+   * maps (`flip_tangent_v = true`) while three expects OpenGL ones, so the
+   * default lands as `[1, -1]` (M29).
+   */
+  normalScale?: [number, number];
+  /** OmniPBR_ClearCoat `clearcoat_bump_factor` × `clearcoat_flip_tangent_*` (M29). */
+  clearcoatNormalScale?: [number, number];
+  /**
+   * Strength of the occlusion map on diffuse lighting: OmniPBR
+   * `ao_to_diffuse` (its default `0` leaves the AO map unused — Omniverse
+   * computes AO at render time instead; M29).
+   */
+  occlusionStrength?: number;
+  /**
+   * True when `emissiveIntensity` is a photometric radiance (Omniverse MDL
+   * emission, nits) that must follow the stage's light calibration
+   * (`lightIntensityScale`) rather than stay a unitless multiplier (M29).
+   */
+  emissivePhotometric?: boolean;
 };
 
 // Input names below are bare (no `inputs:` prefix) so the same name reaches
 // both the authored USD attribute and the `.mdl` declaration value.
 const DIFFUSE_INPUTS = [
   "diffuseColor", // UsdPreviewSurface
-  "diffuse_color_constant", // OmniPBR
-  "diffuse_tint",
+  "diffuse_color_constant", // OmniPBR (`diffuse_tint` is a multiplier, see readOmniPbrAlbedo)
   "base_color",
   "baseColor",
 ];
+
+/** OmniPBR declaration defaults that matter when an asset authors nothing (M29). */
+const OMNI_PBR_DEFAULT_COLOR: Vec3 = [0.2, 0.2, 0.2];
+const OMNI_PBR_DEFAULT_ROUGHNESS = 0.5;
+const OMNI_PBR_DEFAULT_METALLIC = 0;
+/** UsdPreviewSurface spec fallbacks (`roughness` 0.5, `metallic` 0). */
+const PREVIEW_SURFACE_DEFAULT_ROUGHNESS = 0.5;
+const PREVIEW_SURFACE_DEFAULT_METALLIC = 0;
 const OPACITY_INPUTS = ["opacity", "opacity_constant"];
 const OPACITY_THRESHOLD_INPUTS = ["opacityThreshold", "opacity_threshold"];
 const METALLIC_INPUTS = ["metallic", "metallic_constant"];
@@ -205,6 +244,7 @@ export function resolveBoundMaterial(
   // surface shaders fall through to the generic best-effort reads (the
   // ND_UsdPreviewSurface compatibility node matches them by construction).
   const infoId = shader.GetAttribute("info:id").Get();
+  const isPreviewSurface = infoId === "UsdPreviewSurface" || infoId === MTLX_USD_PREVIEW_SURFACE;
   if (typeof infoId === "string" && infoId.startsWith("ND_")) {
     if (infoId === MTLX_STANDARD_SURFACE) {
       const result: ResolvedMaterial = { name: material.GetName() };
@@ -302,7 +342,191 @@ export function resolveBoundMaterial(
       break; // "pbr" and unknown families are covered by the generic reads
   }
 
+  // OmniPBR semantics the plain reads cannot express (M29): albedo
+  // adjustments, map influences, declaration defaults, specular level,
+  // DirectX normal maps and the AO-to-diffuse weight. Unknown MDL families
+  // already fall back to the OmniPBR mapping, so they get these too.
+  const omniPbrLike =
+    mdlSource !== undefined &&
+    (mdlSource.family === undefined ||
+      mdlSource.family === "pbr" ||
+      mdlSource.family === "clearcoat");
+  if (omniPbrLike) {
+    readOmniPbrSemantics(
+      sv,
+      result,
+      material.GetPath(),
+      mdlSource.family !== undefined,
+      options.onWarn,
+    );
+  } else if (isPreviewSurface) {
+    // Spec fallbacks for unauthored constants — a connected map keeps the
+    // factor at 1 (three multiplies factor × map).
+    if (!result.roughnessTexture) result.roughness ??= PREVIEW_SURFACE_DEFAULT_ROUGHNESS;
+    if (!result.metalnessTexture) result.metalness ??= PREVIEW_SURFACE_DEFAULT_METALLIC;
+  }
+  // Every Omniverse MDL family authors emission as a radiance in nits.
+  if (mdlSource && result.emissiveIntensity !== undefined) result.emissivePhotometric = true;
+
   return result;
+}
+
+/** Rec. 709 luminance, as MDL's `math::luminance`. */
+function luminance(c: Vec3): number {
+  return 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
+}
+
+/**
+ * OmniPBR-only semantics (M29), applied after the generic reads:
+ *
+ * - **Albedo**: `albedo_desaturation` (lerp toward luminance), `×
+ *   albedo_brightness`, `+ albedo_add`, `× diffuse_tint`. A constant albedo
+ *   gets them folded in; a textured one keeps the multiplicative part as
+ *   {@link ResolvedMaterial.tint} (add / desaturation need per-texel math and
+ *   are reported).
+ * - **Map influence**: Omniverse mixes `lerp(constant, map, influence)` with
+ *   `*_texture_influence` defaulting to `0` — a map alone does nothing there.
+ *   three can only multiply, so influence ≥ 0.5 uses the map (factor 1) and
+ *   below drops it, each with a diagnostic when it is not an exact 0 / 1.
+ * - **Defaults**: roughness 0.5, metallic 0, base color 0.2 gray.
+ * - `specular_level` (0.5 ≙ F0 4 %) → `specularIntensity`.
+ * - Normal maps: DirectX by default (`flip_tangent_v = true`) → the green
+ *   channel is flipped for three; `bump_factor` scales both axes.
+ * - `ao_to_diffuse` weights the AO map; its default 0 drops the map.
+ */
+function readOmniPbrSemantics(
+  sv: ShaderValues,
+  result: ResolvedMaterial,
+  materialPath: string,
+  /** A recognized OmniPBR family (not an unknown MDL on the fallback path). */
+  knownFamily: boolean,
+  onWarn: ((message: string) => void) | undefined,
+): void {
+  // Albedo adjustments.
+  const brightness = svNumber(sv, "albedo_brightness") ?? 1;
+  const add = svNumber(sv, "albedo_add") ?? 0;
+  const desaturation = svNumber(sv, "albedo_desaturation") ?? 0;
+  const tint = svColor(sv, "diffuse_tint") ?? [1, 1, 1];
+  if (result.colorTexture) {
+    const factor: Vec3 = [tint[0] * brightness, tint[1] * brightness, tint[2] * brightness];
+    if (factor.some((v) => Math.abs(v - 1) > 1e-6)) result.tint = factor;
+    if (add !== 0 || desaturation !== 0) {
+      onWarn?.(
+        `${materialPath}: albedo_add / albedo_desaturation on a textured OmniPBR need per-texel math; ignoring them (brightness and tint are applied)`,
+      );
+    }
+  } else {
+    // Unknown MDL families keep the displayColor / gray fallback when they
+    // author no recognizable diffuse input.
+    const base = result.color ?? (knownFamily ? OMNI_PBR_DEFAULT_COLOR : undefined);
+    if (base) {
+      const lum = luminance(base);
+      result.color = base.map((v, i) => {
+        const desaturated = v + (lum - v) * desaturation;
+        return Math.max(0, (desaturated * brightness + add) * (tint[i] ?? 1));
+      }) as Vec3;
+    }
+  }
+
+  // Declaration defaults (only reached when neither USD nor .mdl authored them).
+  result.roughness ??= OMNI_PBR_DEFAULT_ROUGHNESS;
+  result.metalness ??= OMNI_PBR_DEFAULT_METALLIC;
+
+  // Map influences.
+  applyInfluence(
+    sv,
+    result,
+    "roughnessTexture",
+    "roughness",
+    "reflection_roughness_texture_influence",
+    materialPath,
+    onWarn,
+  );
+  applyInfluence(
+    sv,
+    result,
+    "metalnessTexture",
+    "metalness",
+    "metallic_texture_influence",
+    materialPath,
+    onWarn,
+  );
+
+  // Specular level: F0 = 0.08 × level; three's specularIntensity 1 ≙ F0 4 %.
+  const level = svNumber(sv, "specular_level");
+  if (level !== undefined && Math.abs(level - 0.5) > 1e-6) {
+    result.specularIntensity = Math.max(0, level / 0.5);
+  }
+
+  // Normal maps (DirectX convention by default) and their strength.
+  if (result.normalTexture) {
+    result.normalScale = normalScaleOf(sv, "bump_factor", "flip_tangent_u", "flip_tangent_v");
+  }
+  if (result.clearcoatNormalTexture) {
+    result.clearcoatNormalScale = normalScaleOf(
+      sv,
+      "clearcoat_bump_factor",
+      "clearcoat_flip_tangent_u",
+      "clearcoat_flip_tangent_v",
+    );
+  }
+
+  // AO map weight on diffuse: default 0 (Omniverse ray-traces AO instead).
+  if (result.occlusionTexture) {
+    const aoToDiffuse = svNumber(sv, "ao_to_diffuse") ?? 0;
+    // biome-ignore lint/performance/noDelete: the property must be absent, not undefined (exactOptionalPropertyTypes)
+    if (aoToDiffuse <= 0) delete result.occlusionTexture;
+    else result.occlusionStrength = Math.min(aoToDiffuse, 1);
+  }
+}
+
+function normalScaleOf(
+  sv: ShaderValues,
+  bumpName: string,
+  flipUName: string,
+  flipVName: string,
+): [number, number] {
+  const bump = svNumber(sv, bumpName) ?? 1;
+  const flipU = svBoolean(sv, flipUName) ?? false;
+  const flipV = svBoolean(sv, flipVName) ?? true;
+  return [flipU ? -bump : bump, flipV ? -bump : bump];
+}
+
+/**
+ * Resolve an OmniPBR `lerp(constant, map, influence)` into three's
+ * `factor × map`: keep the map (and let the factor default to 1) when the
+ * influence rounds to 1, keep the constant alone when it rounds to 0.
+ */
+function applyInfluence(
+  sv: ShaderValues,
+  result: ResolvedMaterial,
+  textureKey: "roughnessTexture" | "metalnessTexture",
+  constantKey: "roughness" | "metalness",
+  inputName: string,
+  materialPath: string,
+  onWarn: ((message: string) => void) | undefined,
+): void {
+  if (!result[textureKey]) return;
+  const influence = svNumber(sv, inputName) ?? 0;
+  if (influence >= 0.5) {
+    delete result[constantKey];
+    if (influence < 1 - 1e-6) {
+      onWarn?.(
+        `${materialPath}: ${inputName} = ${influence} mixes the map over the constant; three.js can only use the map — approximating as 1`,
+      );
+    }
+    return;
+  }
+  delete result[textureKey];
+  if (influence > 1e-6) {
+    onWarn?.(
+      `${materialPath}: ${inputName} = ${influence} mixes the map over the constant; three.js can only use one — approximating as 0 (constant only)`,
+    );
+  } else {
+    onWarn?.(
+      `${materialPath}: ${inputName} is 0 (the OmniPBR default), so the ${constantKey} map is unused — Omniverse ignores it too`,
+    );
+  }
 }
 
 /**
@@ -428,7 +652,8 @@ function readOmniSurface(sv: ShaderValues, result: ResolvedMaterial): void {
   const emissionColor = svColor(sv, "emission_color");
   if (emissionWeight !== undefined && emissionWeight > 0 && emissionColor) {
     result.emissiveColor = emissionColor;
-    result.emissiveIntensity = emissionWeight;
+    // `emission_intensity` is the radiance (nits, default 1) that the weight scales (M29).
+    result.emissiveIntensity = emissionWeight * (svNumber(sv, "emission_intensity") ?? 1);
   }
   if (svBoolean(sv, "enable_opacity") === true) {
     const opacity = svNumber(sv, "geometry_opacity");

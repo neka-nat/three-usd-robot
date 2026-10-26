@@ -265,14 +265,21 @@ describe("UsdLux lights (M25)", () => {
     expect(panel.isRectAreaLight).toBe(true);
     expect(panel.width).toBeCloseTo(0.05, 6);
     expect(panel.height).toBeCloseTo(0.005, 6);
-    expect(panel.intensity).toBeCloseTo(15000, 6);
+    // Half of the panel's emission moves onto its shadow-casting spot proxy (M30):
+    // the area light keeps 7 500 nits, the proxy carries 0.5 × 15 000 × area cd.
+    expect(panel.intensity).toBeCloseTo(7500, 6);
+    const proxy = panel.userData.shadowProxy as THREE.SpotLight;
+    expect(proxy.isSpotLight).toBe(true);
+    expect(proxy.castShadow).toBe(true);
+    expect(proxy.intensity).toBeCloseTo(0.5 * 15000 * panel.width * panel.height, 6);
+    expect(proxy.parent).toBe(panel);
 
     // Disk → square of side 2r with π/4 area compensation.
     const disk = lightByName(robot, "disk") as THREE.RectAreaLight;
     expect(disk.isRectAreaLight).toBe(true);
     expect(disk.width).toBeCloseTo(2, 6);
     expect(disk.height).toBeCloseTo(2, 6);
-    expect(disk.intensity).toBeCloseTo(4 * (Math.PI / 4), 6);
+    expect(disk.intensity).toBeCloseTo(4 * (Math.PI / 4) * 0.5, 6); // half on the proxy (M30)
   });
 
   it("collects DomeLights for IBL instead of faking a Three.js light", async () => {

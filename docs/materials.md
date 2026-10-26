@@ -22,10 +22,55 @@ wrapper arguments > declaration defaults.
 
 | MDL family | three.js mapping |
 | --- | --- |
-| `OmniPBR` (and derivatives, e.g. `OmniPBR_Opacity`) | color / metalness / roughness / emissive (`emissive_intensity`), per-channel texture maps and packed `ORM_texture`, opacity, normal map, `texture_translate/rotate/scale` |
+| `OmniPBR` (and derivatives, e.g. `OmniPBR_Opacity`) | color / metalness / roughness / emissive (`emissive_intensity`, nits), per-channel texture maps and packed `ORM_texture`, opacity, normal map, `texture_translate/rotate/scale`, plus the OmniPBR semantics below: albedo adjustments, `*_texture_influence`, declaration defaults, `specular_level`, DirectX normal maps, `ao_to_diffuse` |
 | `OmniPBR_ClearCoat` | the OmniPBR mapping plus `clearcoat` / `clearcoatRoughness` / `clearcoatNormalMap` |
 | `OmniGlass` | `MeshPhysicalMaterial` with `transmission` / `ior` (default 1.491) / `roughness` / `thickness`, glass color + texture |
 | `OmniSurface(Lite)` | constants subset: diffuse color / metalness / roughness / IOR / coat / emission / opacity |
+
+### OmniPBR semantics
+
+Omniverse evaluates OmniPBR with rules a plain parameter copy gets wrong, so
+the mapping applies them (M29) — measured against stock Isaac assets
+(Simple Room, Franka), where every item below is authored:
+
+- **Declaration defaults** — an input nobody authored takes the OmniPBR
+  default: base color 0.2 gray, roughness 0.5, metallic 0, specular 0.5.
+  UsdPreviewSurface shaders use their spec fallbacks (roughness 0.5,
+  metallic 0), and so do unbound meshes.
+- **Albedo adjustments** — `albedo_desaturation` (toward luminance),
+  `× albedo_brightness`, `+ albedo_add`, `× diffuse_tint`. A constant albedo
+  gets them folded in; a textured one keeps `brightness × tint` as the
+  three `color` factor (add / desaturation would need per-texel math and are
+  reported through `onWarn`).
+- **Map influence** — Omniverse mixes `lerp(constant, map, influence)` for
+  roughness and metallic, with `reflection_roughness_texture_influence` /
+  `metallic_texture_influence` defaulting to **0**: a map authored without
+  its influence does nothing there, and the mapping honors that (with a
+  warning). three multiplies `factor × map`, so an influence that rounds to
+  1 uses the map with factor 1 and one that rounds to 0 uses the constant;
+  fractional values are approximated and reported. Packed `ORM_texture`
+  channels follow the same rule.
+- **`specular_level`** — F0 = 0.08 × level, so 0.5 is three's default 4 %;
+  any other value promotes the material to `MeshPhysicalMaterial` with
+  `specularIntensity = level / 0.5`.
+- **Normal maps** — OmniPBR expects **DirectX** maps by default
+  (`flip_tangent_v = true`); three expects OpenGL ones, so `normalScale`
+  lands as `(bump_factor, −bump_factor)` unless the flags say otherwise
+  (`flip_tangent_u` flips red). Clear-coat normal maps follow
+  `clearcoat_bump_factor` / `clearcoat_flip_tangent_*`.
+- **`ao_to_diffuse`** — weights the AO map on diffuse lighting; its default 0
+  drops the map (Omniverse ray-traces occlusion instead — pair the viewer
+  with GTAO). Otherwise it becomes `aoMapIntensity`.
+- **Emission units** — `emissive_intensity` (and OmniSurface
+  `emission_weight × emission_intensity`) is a radiance in nits, the same
+  unit as the stage's lights, so the loader scales it with the resolved
+  `lightIntensityScale` (`material.userData.emissiveIntensityScale`) and
+  counts it toward the `"auto"` calibration. UsdPreviewSurface emission
+  stays a unitless multiplier.
+
+Material textures also request 16× anisotropic filtering (three clamps to
+the device maximum; `textureAnisotropy` on the loader, or the
+`createTextureProvider` option, changes it).
 
 ## MaterialX (parameter mapping)
 

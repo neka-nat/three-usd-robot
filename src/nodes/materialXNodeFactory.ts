@@ -10,8 +10,7 @@
  */
 
 import * as TSL from "three/tsl";
-import type { ShaderNodeObject } from "three/tsl";
-import { MeshPhysicalNodeMaterial, type Node } from "three/webgpu";
+import { MeshPhysicalNodeMaterial } from "three/webgpu";
 import { findBoundSurfaceShader } from "../three/MaterialBinding.js";
 import { MTLX_STANDARD_SURFACE, readMtlxImage } from "../three/MaterialXBinding.js";
 import type { MaterialFactory } from "../three/MeshBinding.js";
@@ -53,7 +52,14 @@ export function createMaterialXNodeFactory(
 }
 
 /** A TSL node plus its component count (drives broadcasts and conversions). */
-type TslNode = ShaderNodeObject<Node>;
+/**
+ * Any TSL node. The graph is assembled dynamically from MaterialX (component
+ * counts are tracked at runtime in {@link TslValue}), which the
+ * dimension-typed TSL typings of r186+ cannot express statically — so nodes
+ * stay loosely typed here, across every supported three release.
+ */
+// biome-ignore lint/suspicious/noExplicitAny: see above
+type TslNode = any;
 type Size = 1 | 2 | 3 | 4;
 type TslValue = { node: TslNode; size: Size };
 

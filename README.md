@@ -96,7 +96,7 @@ give the viewer a real look ([lighting guide](./docs/lighting.md)):
 import { applyRenderDefaults, applyUsdEnvironment } from "three-usd-robot/rendering";
 
 applyRenderDefaults(renderer); // ACES tone mapping + soft shadow maps
-await applyUsdEnvironment(robot, scene, { background: true }); // DomeLight → HDRI environment
+await applyUsdEnvironment(robot, scene, { background: true, fallback: "room", renderer }); // DomeLight → HDRI, or a studio fallback
 ```
 
 `parse` also takes in-memory content (USDA text, an `ArrayBuffer` / typed
@@ -147,6 +147,7 @@ collision setup all serialize — see [Exporting USD](./docs/export.md).
   animation playback and USD export.
 - **`vite-basic-viewer`** — the same thing through React Three Fiber.
 - **`vite-webgpu-nodes`** — MaterialX graph execution (TSL) on `WebGPURenderer`.
+- **`vite-webgpu-viewer`** — the RTX-style viewer: `WebGPURenderer` with a TSL post stack (GTAO / SSGI, SSR, TRAA, bloom, DoF) for interaction and a progressive path tracer (three-gpu-pathtracer) for stills — the two modes mirror Isaac Sim's "RTX – Real-Time" and "RTX – Interactive". Falls back to WebGL 2 without WebGPU (path tracing then stays off).
 
 The viewers take `?asset=<url>` for any asset, or `?isaac=<path under Isaac/>`
 to pull one straight from NVIDIA's CDN. `npm run demo:build` generates the

@@ -22,6 +22,7 @@ export { JointObject } from "./three/JointObject.js";
 export {
   type BindLightsOptions,
   bindLights,
+  type AreaLightShadowOptions,
   type BoundLights,
 } from "./three/LightBinding.js";
 export { LinkObject } from "./three/LinkObject.js";

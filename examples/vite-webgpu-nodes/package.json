@@ -9,10 +9,10 @@
   },
   "dependencies": {
     "fflate": "^0.8.3",
-    "three": "^0.171.0"
+    "three": "^0.186.1"
   },
   "devDependencies": {
-    "@types/three": "^0.171.0",
+    "@types/three": "^0.186.0",
     "typescript": "^5.7.2",
     "vite": "^5.4.11"
   }

@@ -60,7 +60,33 @@ default is **`"auto"`**, decided once per stage:
 The resolved multiplier is stored on `robot.lightIntensityScale` (and
 `applyUsdEnvironment` defaults to it), and the authored value always remains
 on `userData.usdLight.intensity` for apps doing their own photometric
-mapping.
+mapping. Omniverse MDL emissive materials author the same unit (nits), so
+their `emissiveIntensity` follows the multiplier too and counts toward the
+detection (M29, see the materials guide).
+
+## Emitter model (sizes → intensities)
+
+UsdLux `intensity` on an area light is a radiance: a bigger emitter puts out
+more light. three's point / spot lights take candela and its rect lights
+nits, so the binder converts per emitter (`lightEmitterModel`, M29):
+
+| light | `"radiance"` (UsdLux / RTX) | with `normalize = true` |
+| --- | --- | --- |
+| `SphereLight` | `π r² × intensity` cd (projected disc of the sphere); `treatAsPoint` keeps `intensity` as cd | `intensity / 4` (power spread over `4 π r²`) |
+| `RectLight` | `intensity` nits | `intensity / (w × h)` |
+| `DiskLight` | `intensity × π/4` nits on the 2r square | `intensity / (π r²) × π/4` |
+| `CylinderLight` (point approximation) | `2 r l × intensity` cd | `intensity / π` |
+| `DistantLight` | `intensity` (lux-like) | unchanged |
+
+Sizes are world meters (prim scale and `metersPerUnit` applied). `"point"`
+passes `intensity` through unchanged — the pre-M29 behavior, and what
+Storm-style unitless stages expect. The default `"auto"` uses `"radiance"`
+exactly when the stage reads as photometric (the same test as the intensity
+scale) and `"point"` otherwise; the resolved choice is on
+`robot.lightEmitterModel`. Isaac's Franka `SphereLight` (30 000, r = 0.5 m)
+lands at `30 000 × 0.001 × π × 0.25 ≈ 23.6` cd, a 5 cm bulb at the same
+radiance a hundred times dimmer — as in RTX, where it is a hundred times
+smaller.
 
 ## Shadows
 
@@ -71,19 +97,35 @@ With `shadows: true` (the default):
   black blob). Collision meshes never join shadow passes.
 - Distant and spot lights cast per ShadowAPI (`shadow:enable`, default on);
   point lights only when `shadow:enable` is *explicitly* authored `true`,
-  because a point shadow renders six cube faces. `RectAreaLight` cannot cast
-  shadows in Three.js.
+  because a point shadow renders six cube faces.
+- **Area lights** (`RectLight` / `DiskLight`) cannot cast shadows in
+  Three.js, so each one gets a shadow proxy (M30, `areaLightShadows`,
+  default on): a `SpotLight` child at the panel's origin, aimed along its
+  −Z, that takes `share` (default 0.5) of the emission — the panel's on-axis
+  luminous intensity `radiance × area` in candela — and casts a soft shadow
+  map, while the `RectAreaLight` keeps the rest. The shadow's darkness is
+  the share; the cone is widened to cover the scene as seen from the light.
+  The proxy sits on `light.userData.shadowProxy` (not in `robot.lights`);
+  `{ share, mapSize }` tunes it, `false` turns it off, and ShadowAPI
+  `shadow:enable = false` skips it. Isaac's Simple Room ceiling panel thus
+  finally drops a shadow under the table.
 - Shadow cameras are fitted to the loaded geometry's bounding sphere (map
-  sizes 2048 / 1024 / 512 for distant / spot / point) — override any of it on
-  `robot.lights[i].shadow` afterwards.
+  sizes 2048 / 1024 / 512 for distant / spot / point) — or, with
+  `shadowFocus: "robot"`, to the robot's links only (sharper on the robot
+  inside a large cell; scenery outside the frustum casts nothing). Override
+  any of it on `robot.lights[i].shadow` afterwards.
 
 None of this costs anything until you enable shadow maps on the renderer —
 which `applyRenderDefaults` (below) does for you, or manually:
 
 ```ts
 renderer.shadowMap.enabled = true;
-renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.shadowMap.type = THREE.PCFShadowMap; // r182+: soft (Vogel disk); PCFSoftShadowMap before
 ```
+
+`softShadowMapType()` from the `rendering` entry picks the right constant for
+the installed three — `PCFSoftShadowMap` is deprecated since r182 and gone
+from `WebGPURenderer` in r186.
 
 ## DomeLight → environment (IBL)
 
@@ -100,8 +142,10 @@ scene.add(robot);
 await applyUsdEnvironment(robot, scene, { background: true });
 ```
 
-- **Textures** — `.hdr` (Radiance) and `.exr` decode to float equirectangular
-  data textures; other formats decode as LDR images (browser only). Fetching
+- **Textures** — `.hdr` (Radiance, decoded in-house — three's
+  `RGBELoader` became `HDRLoader` in r180) and `.exr` (three's `EXRLoader`)
+  decode to float equirectangular data textures; other formats decode as LDR
+  images (browser only). Fetching
   goes through the robot's captured asset context, so relative CDN paths and
   images inside a `.usdz` package both work. Three prefilters equirectangular
   environments itself — no PMREM setup. A dome with no texture (or one that
@@ -113,7 +157,10 @@ await applyUsdEnvironment(robot, scene, { background: true });
   stage up-axis for the original schema) compose into
   `scene.environmentRotation`: an Isaac Z-up stage lands with a level horizon,
   and a dome yawed about stage-up spins the sky. Needs three r162+
-  (`environmentRotation`) — skipped with a warning on older peers.
+  (`environmentRotation`) — skipped with a warning on older peers. three
+  r184 changed what the Euler means (it used to rotate the sampling vector,
+  showing the inverse); the helper compensates per release
+  (`environmentEulerFor`), so the sky faces the same way everywhere.
 - **Intensity** — `intensity × 2^exposure × scale` goes to
   `scene.environmentIntensity` (three r163+). The scale defaults to the
   `lightIntensityScale` the robot was loaded with, so the environment stays
@@ -122,6 +169,22 @@ await applyUsdEnvironment(robot, scene, { background: true });
   lands at exactly `1.0`.
 - `background: true` mirrors the same texture, rotation and intensity onto
   `scene.background`.
+- **No dome?** Most robot-only Isaac assets author none, and without an
+  environment their metals and glossy plastics reflect nothing. `fallback:
+  "room"` (M30) prefilters three's `RoomEnvironment` (a neutral studio box)
+  through the `renderer` you pass and installs it at `fallbackIntensity`
+  (default 1); a `THREE.Texture` of your own is used as given. The result's
+  `source` says which path ran (`"dome"`, `"room"`, `"texture"`), and
+  `createRoomEnvironment(renderer)` builds the texture on its own for reuse.
+  Backgrounds stay dome-only.
+
+  ```ts
+  const env = await applyUsdEnvironment(robot, scene, {
+    background: true,
+    fallback: "room",
+    renderer,
+  });
+  ```
 
 ## Render defaults (tone mapping, shadows, exposure)
 
@@ -132,7 +195,7 @@ installs the viewer baseline in one call:
 ```ts
 import { applyRenderDefaults } from "three-usd-robot/rendering";
 
-applyRenderDefaults(renderer); // ACES tone mapping + PCFSoft shadow maps
+applyRenderDefaults(renderer); // ACES tone mapping + soft shadow maps
 applyRenderDefaults(renderer, {
   toneMapping: "AgX", // "ACES" | "AgX" | "neutral" (r162+) | "none"
   exposure: robot.cameras[0]?.userData.usdCamera, // number, or a UsdGeomCamera
@@ -152,12 +215,33 @@ panel.
 
 ## Renderer notes
 
-- `RectAreaLight` needs its LTC lookup tables once per app under WebGL:
+- `RectAreaLight` needs its LTC lookup tables once per app: under WebGL
   `RectAreaLightUniformsLib.init()` from
-  `three/addons/lights/RectAreaLightUniformsLib.js` (WebGPU does not).
+  `three/addons/lights/RectAreaLightUniformsLib.js`; under `WebGPURenderer`
+  `RectAreaLightNode.setLTC(RectAreaLightTexturesLib.init())` from
+  `three/addons/lights/RectAreaLightTexturesLib.js` (otherwise the light's
+  node fails to compile).
 - A robot-only stage usually authors no lights at all — keep your own rig as a
   fallback when `robot.lights.length === 0 && robot.domeLights.length === 0`
-  (the Vite example does exactly this).
+  (the Vite example does exactly this, with a `RoomEnvironment` fallback for
+  the ambient and reflections, GTAO on an MSAA composer, and a lower
+  exposure for photometric stages).
+- Image-based lighting is never occluded by the scene: inside a closed room
+  the dome shines through the walls, whereas a ray tracer only lets it in
+  through openings. The Vite example applies the dome at 0.3× when a stage
+  brings fixtures (rect / disk / sphere lights) and no distant sun, with a
+  slider to change it; a path tracer (see the WebGPU example) resolves it
+  properly.
+
+## Measuring against Isaac Sim
+
+`scripts/reference/` holds the comparison harness (M32): calibration stages
+with one light each under `examples/vite-usd-inspector/public/calibration/`,
+`isaac_capture.py` to render them in Isaac Sim from a fixed camera,
+`capture_demo.py` for the same frame out of a demo, and `compare.py` for
+SSIM / ΔE / per-region luminance ratios — the exposure factor that would
+match the two. See `scripts/reference/README.md` for the protocol; the
+demos' exposure for photometric stages was set that way.
 
 ## Out of scope (for now)
 

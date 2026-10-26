@@ -1,3 +1,4 @@
+import type { Mesh, MeshStandardMaterial, Object3D } from "three";
 import type { RobotDescription } from "../robot/RobotDescription.js";
 import { extractRobotDescription } from "../robot/RobotExtractor.js";
 import { buildKinematicTree } from "../robot/buildKinematicTree.js";
@@ -11,7 +12,7 @@ import { crateToUsdaFile } from "../usd/crate/toUsdaFile.js";
 import { loadMdlModules } from "../usd/mdl/loadMdlModules.js";
 import { isZip, openUsdz } from "../usd/usdz.js";
 import { bindCameras } from "./CameraBinding.js";
-import { bindLights } from "./LightBinding.js";
+import { type AreaLightShadowOptions, bindLights } from "./LightBinding.js";
 import { type MaterialFactory, bindRobotMeshes, bindSceneMeshes } from "./MeshBinding.js";
 import { createTextureProvider } from "./TextureBinding.js";
 import { ThreeUsdRobot, type ThreeUsdRobotOptions, type WorldUpAxis } from "./ThreeUsdRobot.js";
@@ -54,11 +55,37 @@ export type ThreeUsdRobotLoaderOptions = {
    */
   lightIntensityScale?: number | "auto";
   /**
+   * How emitter sizes enter light intensities (M29): `"radiance"` follows
+   * UsdLux / RTX (a sphere light of radius r becomes `π r² × intensity`
+   * candela, `normalize` divides by the emitter area), `"point"` passes
+   * `intensity` through unchanged, and `"auto"` (default) uses `"radiance"`
+   * for photometric stages and `"point"` for unitless ones. See
+   * docs/lighting.md.
+   */
+  lightEmitterModel?: "auto" | "radiance" | "point";
+  /**
+   * Anisotropic filtering requested on every material texture (M29, default
+   * `16`; three clamps it to the device maximum). `1` disables it.
+   */
+  textureAnisotropy?: number;
+  /**
    * Flag meshes `castShadow` / `receiveShadow` and configure light shadows per
    * `ShadowAPI` (M25, default `true`). Costs nothing until a renderer enables
    * shadow maps.
    */
   shadows?: boolean;
+  /**
+   * Shadow proxies for RectLights / DiskLights (M30, default `true` with
+   * `shadows`): three's `RectAreaLight` casts no shadow, so a co-located spot
+   * light takes a share of the panel's emission and casts one. `false`
+   * disables it; an object tunes `share` / `mapSize`. See docs/lighting.md.
+   */
+  areaLightShadows?: boolean | AreaLightShadowOptions;
+  /**
+   * Fit shadow cameras to the whole scene (default) or to the robot's links
+   * only (M30, `"robot"`).
+   */
+  shadowFocus?: "scene" | "robot";
   /**
    * Render `BasisCurves` that author `widths` as tube meshes instead of
    * 1-px lines (default `false`, M18).
@@ -102,6 +129,25 @@ export type ThreeUsdRobotLoaderOptions = {
 
 /** A composed stage plus the context needed to bind its meshes and textures. */
 type OpenedStage = { stage: Stage; baseUrl: string; resolver: AssetResolver };
+
+/**
+ * Materials whose emission is a photometric radiance (Omniverse nits, M29) —
+ * flagged by the mesh binder so the loader can calibrate them with the lights.
+ */
+function photometricEmissives(root: Object3D): MeshStandardMaterial[] {
+  const found = new Set<MeshStandardMaterial>();
+  root.traverse((object) => {
+    const mesh = object as Mesh;
+    if (!mesh.isMesh) return;
+    for (const material of Array.isArray(mesh.material) ? mesh.material : [mesh.material]) {
+      const standard = material as MeshStandardMaterial;
+      if (standard.userData.emissivePhotometric && typeof standard.emissiveIntensity === "number") {
+        found.add(standard);
+      }
+    }
+  });
+  return [...found];
+}
 
 /**
  * Loads Isaac Sim / OpenUSD robot assets into a controllable {@link ThreeUsdRobot}.
@@ -219,9 +265,15 @@ export class ThreeUsdRobotLoader {
     const shadows = this.options.shadows ?? true;
     const onWarn = this.options.onWarn;
     if (loadVisuals || loadCollisions || loadScene) {
+      const anisotropy = this.options.textureAnisotropy;
       const textureProvider =
         (this.options.loadTextures ?? true)
-          ? createTextureProvider(resolver, baseUrl, onWarn)
+          ? createTextureProvider(
+              resolver,
+              baseUrl,
+              onWarn,
+              anisotropy !== undefined ? { anisotropy } : {},
+            )
           : undefined;
       const curveTubes = this.options.curveTubes ?? false;
       const materialFactory = this.options.materialFactory;
@@ -253,18 +305,31 @@ export class ThreeUsdRobotLoader {
       this.warnUnsupportedGprims(stage);
     }
     if (this.options.loadLights ?? true) {
+      // Photometric emissive materials (Omniverse nits, M29) count toward
+      // the "auto" calibration and follow the resolved scale afterwards.
+      const emissive = photometricEmissives(robot3d);
       // After mesh binding: lights anchor to the mirrored scenery groups and
       // shadow cameras fit the bound geometry (M25).
+      const emitterModel = this.options.lightEmitterModel;
+      const shadowFocus = this.options.shadowFocus;
       const bound = bindLights(stage, robot3d, {
         lightIntensityScale: this.options.lightIntensityScale ?? "auto",
-        ...(shadows ? { shadows } : {}),
+        ...(shadows ? { shadows, areaLightShadows: this.options.areaLightShadows ?? true } : {}),
+        ...(shadowFocus ? { shadowFocus } : {}),
         ...(onWarn ? { onWarn } : {}),
+        ...(emitterModel ? { emitterModel } : {}),
+        additionalEmissions: emissive.map((m) => m.emissiveIntensity),
       });
       robot3d.lights = bound.lights;
       robot3d.domeLights = bound.domes;
       // The resolved multiplier ("auto" → 0.001 or 1) — applyUsdEnvironment
       // defaults to it so the dome environment stays in balance (M26).
       robot3d.lightIntensityScale = bound.appliedIntensityScale;
+      robot3d.lightEmitterModel = bound.emitterModel;
+      for (const material of emissive) {
+        material.emissiveIntensity *= bound.appliedIntensityScale;
+        material.userData.emissiveIntensityScale = bound.appliedIntensityScale;
+      }
     }
     if (this.options.loadCameras ?? true) {
       robot3d.cameras = bindCameras(stage, robot3d, {
