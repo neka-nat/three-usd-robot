@@ -27,6 +27,7 @@ export default defineConfig({
     // example resolves its own copy — collapse them to one instance.
     dedupe: ["three"],
     alias: [
+      { find: "three-usd-robot/xr", replacement: src("xr.ts") },
       { find: "three-usd-robot/helpers", replacement: src("helpers.ts") },
       { find: "three-usd-robot/rendering", replacement: src("rendering.ts") },
       { find: "three-usd-robot/core", replacement: src("core.ts") },

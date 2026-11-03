@@ -7,7 +7,7 @@
 
 import * as THREE from "three";
 import type { XRDevice } from "iwer";
-import type { XrOriginRig } from "./xr/origin";
+import type { XrOriginRig } from "three-usd-robot/xr";
 
 export type Emulator = XRDevice;
 
@@ -45,4 +45,27 @@ export function aimEmulatedController(
   const dir = local.sub(origin).normalize();
   const q = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 0, -1), dir);
   controller.quaternion.set(q.x, q.y, q.z, q.w);
+}
+
+/** Move an emulated controller to a world-space point, keeping its orientation. */
+export function placeEmulatedController(
+  device: Emulator,
+  rig: XrOriginRig,
+  hand: "left" | "right",
+  point: THREE.Vector3,
+): void {
+  const controller = device.controllers[hand];
+  if (!controller) return;
+  const local = rig.worldToLocal(point.clone());
+  controller.position.set(local.x, local.y, local.z);
+}
+
+/** Hold or let go of an emulated controller button (`trigger` | `squeeze`). */
+export function setEmulatedButton(
+  device: Emulator,
+  hand: "left" | "right",
+  button: "trigger" | "squeeze",
+  pressed: boolean,
+): void {
+  device.controllers[hand]?.updateButtonValue(button, pressed ? 1 : 0);
 }

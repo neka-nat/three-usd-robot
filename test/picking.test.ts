@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import * as THREE from "three";
 import { describe, expect, it } from "vitest";
 import { createGhostRobot, pickLink, resolveLink } from "../src/helpers.js";
@@ -5,69 +6,7 @@ import { type ThreeUsdRobot, ThreeUsdRobotLoader } from "../src/index.js";
 
 // Two links with real geometry at known places (Y-up, metres), one hidden
 // guide-purpose collision box, and a scenery wall that belongs to no link.
-const CELL = `#usda 1.0
-(
-    defaultPrim = "World"
-    metersPerUnit = 1.0
-    upAxis = "Y"
-)
-
-def Xform "World" (
-    prepend apiSchemas = ["PhysicsArticulationRootAPI"]
-)
-{
-    def Xform "base" (
-        prepend apiSchemas = ["PhysicsRigidBodyAPI"]
-    )
-    {
-        def Cube "body"
-        {
-            double size = 1
-        }
-    }
-
-    def Xform "tool" (
-        prepend apiSchemas = ["PhysicsRigidBodyAPI"]
-    )
-    {
-        float3 xformOp:translate = (2, 0, 0)
-        uniform token[] xformOpOrder = ["xformOp:translate"]
-
-        def Sphere "skin"
-        {
-            double radius = 0.3
-        }
-
-        def Cube "hitbox" (
-            prepend apiSchemas = ["PhysicsCollisionAPI"]
-        )
-        {
-            uniform token purpose = "guide"
-            double size = 1
-        }
-    }
-
-    def PhysicsFixedJoint "root_joint"
-    {
-        rel physics:body1 = </World/base>
-    }
-
-    def PhysicsRevoluteJoint "joint1"
-    {
-        uniform token physics:axis = "Y"
-        rel physics:body0 = </World/base>
-        rel physics:body1 = </World/tool>
-        point3f physics:localPos0 = (2, 0, 0)
-    }
-
-    def Cube "wall"
-    {
-        float3 xformOp:translate = (-2, 0, 0)
-        uniform token[] xformOpOrder = ["xformOp:translate"]
-        double size = 0.5
-    }
-}
-`;
+const CELL = readFileSync(new URL("../test-assets/pick_cell.usda", import.meta.url), "utf8");
 
 async function load(): Promise<ThreeUsdRobot> {
   // Collision meshes are opt-in; they load hidden and still raycast.

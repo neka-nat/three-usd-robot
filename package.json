@@ -55,6 +55,10 @@
     "./react": {
       "types": "./dist/react.d.ts",
       "import": "./dist/react.js"
+    },
+    "./xr": {
+      "types": "./dist/xr.d.ts",
+      "import": "./dist/xr.js"
     }
   },
   "main": "./dist/index.js",

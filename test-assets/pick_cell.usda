@@ -1,0 +1,62 @@
+#usda 1.0
+(
+    defaultPrim = "World"
+    metersPerUnit = 1.0
+    upAxis = "Y"
+)
+
+def Xform "World" (
+    prepend apiSchemas = ["PhysicsArticulationRootAPI"]
+)
+{
+    def Xform "base" (
+        prepend apiSchemas = ["PhysicsRigidBodyAPI"]
+    )
+    {
+        def Cube "body"
+        {
+            double size = 1
+        }
+    }
+
+    def Xform "tool" (
+        prepend apiSchemas = ["PhysicsRigidBodyAPI"]
+    )
+    {
+        float3 xformOp:translate = (2, 0, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+
+        def Sphere "skin"
+        {
+            double radius = 0.3
+        }
+
+        def Cube "hitbox" (
+            prepend apiSchemas = ["PhysicsCollisionAPI"]
+        )
+        {
+            uniform token purpose = "guide"
+            double size = 1
+        }
+    }
+
+    def PhysicsFixedJoint "root_joint"
+    {
+        rel physics:body1 = </World/base>
+    }
+
+    def PhysicsRevoluteJoint "joint1"
+    {
+        uniform token physics:axis = "Y"
+        rel physics:body0 = </World/base>
+        rel physics:body1 = </World/tool>
+        point3f physics:localPos0 = (2, 0, 0)
+    }
+
+    def Cube "wall"
+    {
+        float3 xformOp:translate = (-2, 0, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+        double size = 0.5
+    }
+}

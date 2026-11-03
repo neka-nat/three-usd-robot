@@ -31,13 +31,27 @@ npm run dev
   / `Bounds` (auto-frame). Also accepts `?asset=<url>`.
 - **vite-webgpu-nodes** — MaterialX (`ND_*`) procedural graphs executed as TSL
   node materials on `WebGPURenderer` (`three-usd-robot/nodes`).
-- **vite-xr-viewer** — the **WebXR viewer**: walk around a robot or a cell at
-  real scale in a headset (`VRButton`, controller models, a floor grid at the
-  XR floor). Point a controller at a link to see its name, trigger to select
-  it, left grip for a tabletop view, right grip to teleport. `?up=Z` for a
-  Z-up world, `?emulate=1` for the IWER headset emulator (headless checks via
-  `scripts/xr-capture.py`), `npm run dev:https` for a headset on the LAN. See
+- **vite-xr-viewer** — the **WebXR viewer** on `three-usd-robot/xr`: walk
+  around a robot or a cell at real scale in a headset (`VRButton`, controller
+  models, a floor grid at the XR floor). Point a controller at a link to see
+  its name, trigger to select it, left grip for a tabletop view, right grip
+  near the TCP handle to grab it (it snaps back on release — no IK here) or
+  elsewhere to teleport. `?up=Z` for a Z-up world, `?emulate=1` for the IWER
+  headset emulator (headless checks via `scripts/xr-capture.py`). For a
+  headset on the LAN: `npm run dev:https`, open the printed `Network:` URL in
+  the headset's browser and accept the self-signed certificate once; or
+  `adb reverse tcp:5173 tcp:5173` and open `http://localhost:5173/`. See
   [docs/xr.md](../docs/xr.md).
+- **vite-xr-r3f** — the same XR viewer on **React Three Fiber +
+  `@react-three/xr`** with a **Z-up world** and **three r169** — botrail's
+  stack, as a rehearsal for its integration: `<XROrigin>` carries
+  `xrOriginQuaternion("Z")` and `xrOriginPlacement` stands the player in
+  front of the robot; `<UsdRobot>`'s pointer events (mouse and controller ray
+  alike) resolve to links with `resolveLink`; the right grip grabs a
+  `TcpTargetHandle` through `useXRInputSourceEvent` + `handle.grab(gripObject)`.
+  Its typecheck compiles the library's built `.d.ts` against `@types/three`
+  r169 (`npm run build` at the root first). `?emulate=1` and
+  `scripts/xr-capture.py` work the same as for `vite-xr-viewer`.
 - **vite-webgpu-viewer** — the **RTX-style viewer**: `WebGPURenderer` with a
   TSL post stack (GTAO or SSGI, screen-space reflections, TRAA, bloom, depth
   of field) for interaction, and a progressive **path tracer**

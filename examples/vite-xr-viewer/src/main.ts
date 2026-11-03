@@ -1,11 +1,11 @@
 /**
  * WebXR viewer (M33 PoC): walk around a USD robot or cell at real scale.
  *
- * WebGL `WebXRRenderer` path only — three renders straight into the XR layer,
- * so the usual viewer defaults (`applyRenderDefaults`: ACES + soft shadows)
- * apply directly; no post stack. The XR-specific pieces (`src/xr/*`) are
- * written in the shape planned for `three-usd-robot/xr` and move into the
- * library once validated here.
+ * WebGL path only — three renders straight into the XR layer, so the usual
+ * viewer defaults (`applyRenderDefaults`: ACES + soft shadows) apply directly;
+ * no post stack. The XR pieces come from `three-usd-robot/xr`: the origin
+ * rig, controller-ray picking, and the grip binding of a TCP target handle
+ * (no IK in this viewer — the handle snaps back to the link on release).
  *
  *   ?asset=<url> | ?isaac=<path>   any asset / NVIDIA CDN asset (like the other examples)
  *   ?up=Z                          Z-up application world (botrail's convention) — the
@@ -22,10 +22,22 @@ import { XRControllerModelFactory } from "three/addons/webxr/XRControllerModelFa
 import { type ThreeUsdRobot, ThreeUsdRobotLoader } from "three-usd-robot";
 import { highlightLink, restoreAllLinkMaterials, restoreLinkMaterials } from "three-usd-robot/helpers";
 import { applyRenderDefaults, applyUsdEnvironment } from "three-usd-robot/rendering";
-import { type Emulator, aimEmulatedController, installEmulator } from "./emulate";
+import {
+  bindXrGrab,
+  onXrInput,
+  TcpTargetHandle,
+  type XrWorldUp,
+  XrOriginRig,
+  XrRayPicker,
+} from "three-usd-robot/xr";
+import {
+  type Emulator,
+  aimEmulatedController,
+  installEmulator,
+  placeEmulatedController,
+  setEmulatedButton,
+} from "./emulate";
 import { TextLabel } from "./label";
-import { type XrWorldUp, XrOriginRig } from "./xr/origin";
-import { XrRayPicker } from "./xr/rayPicker";
 
 // ---------------------------------------------------------------------------
 // Parameters
@@ -93,9 +105,6 @@ for (const controller of rig.controllers) {
   ray.name = "ray";
   ray.scale.z = 3;
   controller.add(ray);
-  controller.addEventListener("connected", (event) => {
-    controller.userData.handedness = event.data.handedness;
-  });
 }
 
 // ---------------------------------------------------------------------------
@@ -206,6 +215,7 @@ async function load(url: string) {
     robot = next;
     scene.add(next);
     frame(next);
+    setupTcpHandle(next, viewpoint.radius);
 
     const fallback = next.domeLights.length === 0 && next.lights.length < 2;
     fallbackLights.visible = fallback;
@@ -292,11 +302,76 @@ const pickers = rig.controllers.map((controller) => {
   return { picker, label, dot, controller };
 });
 
-// Grips: left toggles the tabletop view, right teleports to where the ray meets the floor.
+// ---------------------------------------------------------------------------
+// TCP target handle on the tool link (deepest leaf). Squeezing the right grip
+// within reach of it grabs it (`bindXrGrab`); without IK in this viewer the
+// handle just follows the hand and snaps back to the link on release.
+// ---------------------------------------------------------------------------
+
+let tcpHandle: TcpTargetHandle | null = null;
+let unbindGrab: (() => void) | null = null;
+const tcp = { link: null as string | null, phase: "-", changes: 0, last: null as number[] | null };
+const GRAB_REACH = 0.2; // metres at life size
+
+function guessToolLink(next: ThreeUsdRobot): string | null {
+  const leaves = Object.values(next.tree.nodes).filter((n) => n.children.length === 0);
+  leaves.sort((a, b) => b.depth - a.depth);
+  return leaves[0]?.link ?? null;
+}
+
+function withinReach(grip: THREE.Object3D): boolean {
+  if (!tcpHandle) return false;
+  grip.updateWorldMatrix(true, false);
+  tcpHandle.updateWorldMatrix(true, false);
+  const a = new THREE.Vector3().setFromMatrixPosition(grip.matrixWorld);
+  const b = new THREE.Vector3().setFromMatrixPosition(tcpHandle.matrixWorld);
+  return a.distanceTo(b) <= GRAB_REACH * rig.playerScale;
+}
+
+function bindGrab() {
+  unbindGrab?.();
+  unbindGrab = null;
+  const grip = rig.grip("right");
+  if (!grip || !tcpHandle) return;
+  unbindGrab = bindXrGrab(tcpHandle, grip, { when: () => withinReach(grip) });
+}
+
+function setupTcpHandle(next: ThreeUsdRobot, radius: number) {
+  unbindGrab?.();
+  unbindGrab = null;
+  tcpHandle?.dispose();
+  tcpHandle = null;
+  const link = guessToolLink(next);
+  if (!link) return;
+  const handle = new TcpTargetHandle(next, link, {
+    size: THREE.MathUtils.clamp(radius * 0.12, 0.03, 0.3),
+  });
+  scene.add(handle);
+  handle.addEventListener("grabstart", (e) => {
+    tcp.phase = e.phase;
+  });
+  handle.addEventListener("change", (e) => {
+    tcp.phase = e.phase;
+    tcp.changes++;
+    tcp.last = e.pose.position;
+  });
+  handle.addEventListener("grabend", (e) => {
+    tcp.phase = e.phase;
+  });
+  tcpHandle = handle;
+  tcp.link = handle.link;
+  bindGrab();
+}
+
+// Handedness arrives with the input source: (re)bind the grab when it does.
+for (const controller of rig.controllers) onXrInput(controller, "connected", () => bindGrab());
+
+// Grips: left toggles the tabletop view, right teleports to where the ray
+// meets the floor — unless it is grabbing the TCP handle.
 const floorPlane = new THREE.Plane(UP.clone(), 0);
 for (const { controller } of pickers) {
   controller.addEventListener("squeezestart", () => {
-    const hand = controller.userData.handedness ?? (controller === rig.controllers[0] ? "right" : "left");
+    const hand = rig.handednessOf(controller) ?? (controller === rig.controllers[0] ? "right" : "left");
     if (hand === "left") {
       rig.playerScale = rig.playerScale === 1 ? TABLETOP_SCALE : 1;
       // Keep the model in front at the new scale: stand proportionally further back.
@@ -304,6 +379,8 @@ for (const { controller } of pickers) {
       const standAt = viewpoint.lookAt.clone().projectOnPlane(UP).addScaledVector(back, rig.playerScale);
       rig.recenter(standAt, viewpoint.lookAt);
     } else {
+      const grip = rig.grip("right") ?? rig.grips[rig.controllers.indexOf(controller)];
+      if (grip && withinReach(grip)) return; // the grab binding takes this squeeze
       controller.updateMatrixWorld();
       const ray = new THREE.Ray(
         new THREE.Vector3().setFromMatrixPosition(controller.matrixWorld),
@@ -354,9 +431,10 @@ function updateStatsHud(now: number) {
   const budget = 1000 / 72;
   const line1 = `${s.frameMsAvg.toFixed(1)} ms avg · ${s.frameMsMax.toFixed(1)} max (72 Hz = ${budget.toFixed(1)})`;
   const line2 = `${s.drawCalls} draw calls · ${(s.triangles / 1000).toFixed(0)}k tris`;
-  const line3 = s.presenting
-    ? `XR ${s.sessionFrameRate ? `${s.sessionFrameRate} Hz` : ""} · scale 1:${s.playerScale}`
-    : "desktop";
+  const line3 =
+    (s.presenting
+      ? `XR ${s.sessionFrameRate ? `${s.sessionFrameRate} Hz` : ""} · scale 1:${s.playerScale}`
+      : "desktop") + (tcpHandle ? ` · tcp ${tcp.phase} ×${tcp.changes}` : "");
   statsEl.textContent = `${line1}\n${line2}\n${line3}`;
   statsLabel.setText(`${line1}\n${line2}\n${line3}`);
 }
@@ -373,9 +451,7 @@ renderer.xr.addEventListener("sessionstart", () => {
   xrFrames = 0;
   pendingRecenter = true;
   // The stats label rides the left controller; fall back to the second slot.
-  const left =
-    pickers.find((p) => p.controller.userData.handedness === "left")?.controller ?? rig.controllers[1];
-  left?.add(statsLabel);
+  (rig.controller("left") ?? rig.controllers[1])?.add(statsLabel);
 });
 renderer.xr.addEventListener("sessionend", () => {
   controls.enabled = true;
@@ -567,7 +643,20 @@ Object.assign(window as unknown as Record<string, unknown>, {
         hovered,
         selected,
         hoverNames: pickers.map((p) => p.picker.current?.link.linkName ?? null),
+        tcp: {
+          ...tcp,
+          grabbed: tcpHandle?.grabbed ?? false,
+          handleWorld: tcpHandle ? tcpHandle.getWorldPosition(new THREE.Vector3()).toArray() : null,
+        },
       };
+    },
+    /** Move an emulated controller to a world point (x, y, z), keeping its aim. */
+    place(hand: "left" | "right", point: [number, number, number]) {
+      if (emulator) placeEmulatedController(emulator, rig, hand, new THREE.Vector3(...point));
+    },
+    /** Hold (true) or let go (false) of an emulated controller button. */
+    hold(hand: "left" | "right", button: "trigger" | "squeeze", pressed: boolean) {
+      if (emulator) setEmulatedButton(emulator, hand, button, pressed);
     },
     /** Start an immersive session without the button (for scripts). */
     async enterXR() {

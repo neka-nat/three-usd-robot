@@ -96,8 +96,13 @@ type ForwardedProps = Partial<
     | "name"
     | "userData"
     | "onClick"
+    | "onDoubleClick"
+    | "onPointerDown"
+    | "onPointerUp"
     | "onPointerOver"
     | "onPointerOut"
+    | "onPointerEnter"
+    | "onPointerLeave"
     | "onPointerMove"
   >
 >;

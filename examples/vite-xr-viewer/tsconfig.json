@@ -12,6 +12,7 @@
     "paths": {
       "three-usd-robot": ["../../src/index.ts"],
       "three-usd-robot/core": ["../../src/core.ts"],
+      "three-usd-robot/xr": ["../../src/xr.ts"],
       "three-usd-robot/helpers": ["../../src/helpers.ts"],
       "three-usd-robot/rendering": ["../../src/rendering.ts"]
     }

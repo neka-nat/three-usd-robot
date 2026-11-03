@@ -9,6 +9,7 @@ export default defineConfig({
     nodes: "src/nodes.ts",
     rendering: "src/rendering.ts",
     react: "src/react.tsx",
+    xr: "src/xr.ts",
   },
   format: ["esm"],
   dts: true,

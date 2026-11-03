@@ -42,6 +42,10 @@ exported back to `.usda` / `.usdz` in the browser.
 - **Export** — write robots and whole cells back to `.usda` / `.usdz`,
   simulation-ready for Isaac Sim.
 - **React** — declarative `<UsdRobot>` for React Three Fiber.
+- **XR** — walk around a robot or a cell at real scale in a headset:
+  `three-usd-robot/xr` adds the XR origin rig, controller-ray link picking
+  and a grabbable TCP target handle on top of plain WebXR (see
+  [WebXR](./docs/xr.md)).
 
 Stock Isaac Sim robot assets load straight from their public CDN — Franka
 Panda, UR10e, Fanuc CRX-10iA/L, Kuka KR210, Shadow Hand, Unitree H1/Go2 and
@@ -114,7 +118,7 @@ robotics-style Z-up world. Details in the [runtime guide](./docs/runtime.md).
 | [Lighting](./docs/lighting.md) | UsdLux → Three.js lights, DomeLight → IBL environment, shadow & tone-mapping defaults, intensity calibration for Omniverse assets |
 | [Animation & recorded playback](./docs/recorded-playback.md) | Time-sampled trajectories, baked body-transform recordings, constraint diagnostics & joint projection |
 | [Exporting USD](./docs/export.md) | Re-export, `RobotBuilder` authoring, simulation-ready assets (mass / collision / Isaac Robot Schema), USDZ packaging |
-| [WebXR](./docs/xr.md) | Real-scale viewing in a headset: rendering path, XR origin vs. Y-up / Z-up worlds, controller-ray link picking, the IWER emulator for headless checks (PoC) |
+| [WebXR](./docs/xr.md) | Real-scale viewing in a headset: rendering path, XR origin vs. Y-up / Z-up worlds, controller-ray link picking, grabbing the TCP target handle, the IWER emulator for headless checks |
 
 ## Export USD
 
@@ -165,6 +169,7 @@ factory cell and builds the deployable site.
 | `three-usd-robot/extras` | Joint slider panel (bring your own `lil-gui`) |
 | `three-usd-robot/nodes` | Optional MaterialX → TSL execution (`three/webgpu`) — `createMaterialXNodeFactory`, `loadMaterialXDocument` |
 | `three-usd-robot/react` | React Three Fiber `<UsdRobot>` component + hooks |
+| `three-usd-robot/xr` | WebXR pieces — origin rig (Y-up / Z-up worlds, recenter, teleport, player scale), controller-ray link picking, grip binding of the TCP target handle; depends on `three` alone |
 
 ## Development
 

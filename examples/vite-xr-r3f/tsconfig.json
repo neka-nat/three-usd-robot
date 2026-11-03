@@ -1,0 +1,33 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "jsx": "react-jsx",
+    "strict": true,
+    "skipLibCheck": true,
+    "noEmit": true,
+    // Types come from the library's built d.ts (run `npm run build` at the repo
+    // root first) against this example's @types/three — r169, botrail's — i.e.
+    // exactly what an npm consumer on that three sees. Vite still runs the
+    // library from source (vite.config.ts aliases).
+    "baseUrl": ".",
+    "paths": {
+      // One copy of three's types for the example AND the aliased library sources
+      // (which would otherwise resolve the repo root's newer @types/three).
+      "three": ["./node_modules/@types/three/index.d.ts"],
+      "three/webgpu": ["./node_modules/@types/three/webgpu.d.ts"],
+      "three/tsl": ["./node_modules/@types/three/tsl.d.ts"],
+      "three/addons/*": ["./node_modules/@types/three/examples/jsm/*"],
+      "three/examples/jsm/*": ["./node_modules/@types/three/examples/jsm/*"],
+      "three-usd-robot": ["../../dist/index.d.ts"],
+      "three-usd-robot/core": ["../../dist/core.d.ts"],
+      "three-usd-robot/helpers": ["../../dist/helpers.d.ts"],
+      "three-usd-robot/rendering": ["../../dist/rendering.d.ts"],
+      "three-usd-robot/react": ["../../dist/react.d.ts"],
+      "three-usd-robot/xr": ["../../dist/xr.d.ts"]
+    }
+  },
+  "include": ["src", "vite.config.ts"]
+}
