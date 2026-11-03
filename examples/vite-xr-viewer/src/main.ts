@@ -4,8 +4,9 @@
  * WebGL path only — three renders straight into the XR layer, so the usual
  * viewer defaults (`applyRenderDefaults`: ACES + soft shadows) apply directly;
  * no post stack. The XR pieces come from `three-usd-robot/xr`: the origin
- * rig, controller-ray picking, and the grip binding of a TCP target handle
- * (no IK in this viewer — the handle snaps back to the link on release).
+ * rig, controller-ray picking, and the grip binding of a TCP target handle.
+ * While the handle is held, a demo IK (src/ik.ts) moves the arm after it; on
+ * release the handle snaps back onto the link, wherever the arm got to.
  *
  *   ?asset=<url> | ?isaac=<path>   any asset / NVIDIA CDN asset (like the other examples)
  *   ?up=Z                          Z-up application world (botrail's convention) — the
@@ -14,16 +15,19 @@
  *   ?anim=0                        do not advance time-sampled animation
  *   ?scale=<n>                     tabletop player scale toggled by the left grip (default 5)
  *
- * Teaching (src/teach.ts): the right grip near a link turns its joint, A
- * records a waypoint (ghost + tool path), B undoes, X plays the taught loop,
- * Y clears; the trajectory exports as USD time samples (panel / `E`).
+ * Teaching (src/teach.ts): the right grip near a link turns its joint, near
+ * the TCP handle drags the arm by its tool (IK), A records a waypoint (ghost +
+ * tool path), B undoes, X plays the taught loop, Y clears; the trajectory
+ * exports as USD time samples (panel / `E`). On the desktop a TransformControls
+ * gizmo drags the handle (`T` toggles translate / rotate).
  */
 
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+import { TransformControls } from "three/addons/controls/TransformControls.js";
 import { VRButton } from "three/addons/webxr/VRButton.js";
 import { XRControllerModelFactory } from "three/addons/webxr/XRControllerModelFactory.js";
-import { type ThreeUsdRobot, ThreeUsdRobotLoader } from "three-usd-robot";
+import { type KinematicNode, type ThreeUsdRobot, ThreeUsdRobotLoader } from "three-usd-robot";
 import {
   getLinkMeshes,
   highlightLink,
@@ -47,6 +51,7 @@ import {
   placeEmulatedController,
   setEmulatedButton,
 } from "./emulate";
+import { DemoIk } from "./ik";
 import { TextLabel } from "./label";
 import { TeachSession } from "./teach";
 
@@ -331,21 +336,58 @@ const pickers = rig.controllers.map((controller) => {
   return { picker, label, dot, controller };
 });
 
+/** The label riding the controller of one hand (handedness arrives with the input source). */
+function labelFor(hand: "left" | "right"): TextLabel | undefined {
+  return (
+    pickers.find((p) => rig.handednessOf(p.controller) === hand) ??
+    pickers[hand === "right" ? 0 : 1]
+  )?.label;
+}
+
 // ---------------------------------------------------------------------------
-// TCP target handle on the tool link (deepest leaf). Squeezing the right grip
-// within reach of it grabs it (`bindXrGrab`); without IK in this viewer the
-// handle just follows the hand and snaps back to the link on release.
+// TCP target handle on the tool link. Squeezing the right grip within reach
+// of it grabs it (`bindXrGrab`); on the desktop a TransformControls gizmo
+// drags it. While it is held the demo IK (src/ik.ts) moves the arm after it
+// every frame; the handle turns red when the target is out of reach and snaps
+// back onto the link on release.
 // ---------------------------------------------------------------------------
 
 let tcpHandle: TcpTargetHandle | null = null;
+let ik: DemoIk | null = null;
 let unbindGrab: (() => void) | null = null;
 const tcp = { link: null as string | null, phase: "-", changes: 0, last: null as number[] | null };
 const GRAB_REACH = 0.2; // metres at life size
+const IK_POSITION_ONLY = params.get("ik") === "pos";
+let ikText = "";
 
+/**
+ * The tool link: the link a gripper's fingers hang from (the lowest common
+ * ancestor of the deepest leaves), or the deepest leaf itself on a plain
+ * chain. Keeps finger joints out of the IK chain and the handle on the hand.
+ */
 function guessToolLink(next: ThreeUsdRobot): string | null {
-  const leaves = Object.values(next.tree.nodes).filter((n) => n.children.length === 0);
-  leaves.sort((a, b) => b.depth - a.depth);
-  return leaves[0]?.link ?? null;
+  const nodes = next.tree.nodes;
+  const leaves = Object.values(nodes).filter((n) => n.children.length === 0);
+  if (leaves.length === 0) return null;
+  const maxDepth = Math.max(...leaves.map((n) => n.depth));
+  const deepest = leaves.filter((n) => n.depth === maxDepth);
+  const ancestors = (key: string) => {
+    const out: string[] = [];
+    let n: KinematicNode | undefined = nodes[key];
+    while (n) {
+      out.push(n.link);
+      n = n.parent ? nodes[n.parent] : undefined;
+    }
+    return out;
+  };
+  let common = ancestors(deepest[0]!.link);
+  for (const leaf of deepest.slice(1)) {
+    const mine = new Set(ancestors(leaf.link));
+    common = common.filter((k) => mine.has(k));
+  }
+  const lca = common[0];
+  // Two arms sharing a base meet at the root: that is not a tool, fall back.
+  return lca && nodes[lca]!.depth > 0 ? lca : deepest[0]!.link;
 }
 
 function withinReach(grip: THREE.Object3D): boolean {
@@ -365,19 +407,39 @@ function bindGrab() {
   unbindGrab = bindXrGrab(tcpHandle, grip, { when: () => withinReach(grip) });
 }
 
+// Desktop path: a TransformControls drags the handle (disabled inside a session).
+const tcpControls = new TransformControls(camera, renderer.domElement);
+tcpControls.size = 0.6;
+const tcpControlsHelper = tcpControls.getHelper();
+scene.add(tcpControlsHelper);
+tcpControls.addEventListener("dragging-changed", (event) => {
+  controls.enabled = !event.value;
+  if (!tcpHandle) return;
+  if (event.value) tcpHandle.grab();
+  else tcpHandle.release();
+});
+
 function setupTcpHandle(next: ThreeUsdRobot, radius: number) {
   unbindGrab?.();
   unbindGrab = null;
+  tcpControls.detach();
   tcpHandle?.dispose();
   tcpHandle = null;
+  ik = null;
+  ikText = "";
   const link = guessToolLink(next);
   if (!link) return;
   const handle = new TcpTargetHandle(next, link, {
     size: THREE.MathUtils.clamp(radius * 0.12, 0.03, 0.3),
+    autoUpdate: false, // stepped from the frame loop, right before the IK
   });
   scene.add(handle);
   handle.addEventListener("grabstart", (e) => {
     tcp.phase = e.phase;
+    // Damp hand jitter in a headset; the desktop gizmo is exact and re-asserts
+    // its pose only while the pointer moves, so smoothing would stop it short.
+    handle.smoothing = renderer.xr.isPresenting ? 0.2 : 0;
+    teach?.stop(); // the hand takes over from the playback
   });
   handle.addEventListener("change", (e) => {
     tcp.phase = e.phase;
@@ -386,10 +448,26 @@ function setupTcpHandle(next: ThreeUsdRobot, radius: number) {
   });
   handle.addEventListener("grabend", (e) => {
     tcp.phase = e.phase;
+    handle.setStatus({ reachable: true }); // the handle is back on the link
+    labelFor("right")?.setText("");
   });
   tcpHandle = handle;
   tcp.link = handle.link;
+  const solver = new DemoIk(next, link, IK_POSITION_ONLY ? { orientationWeight: 0 } : {});
+  ik = solver.dof > 0 ? solver : null; // a static tool (no joints above it) just follows the hand
+  tcpControls.attach(handle);
   bindGrab();
+}
+
+/** One IK step after the held handle: joints, handle colour and the HUD text. */
+function stepIk(): void {
+  if (!tcpHandle || !ik || !tcpHandle.grabbed) return;
+  const result = ik.solve(tcpHandle.getPose("world"));
+  tcpHandle.setStatus({ reachable: result.converged });
+  const mm = (result.positionError * 1000).toFixed(0);
+  const deg = ik.tracksOrientation ? ` ${THREE.MathUtils.radToDeg(result.orientationError).toFixed(0)}°` : "";
+  ikText = result.converged ? `ik ok ${mm} mm${deg}` : `ik out of reach ${mm} mm${deg}`;
+  labelFor("right")?.setText(ikText);
 }
 
 // Handedness arrives with the input source: (re)bind the grab when it does.
@@ -450,6 +528,7 @@ window.addEventListener("keydown", (event) => {
   else if (key === "p") teachActions.play();
   else if (key === "c") teachActions.clear();
   else if (key === "e") teachActions.export();
+  else if (key === "t") tcpControls.setMode(tcpControls.mode === "translate" ? "rotate" : "translate");
 });
 
 function updateTeachHud() {
@@ -535,6 +614,7 @@ function updateStatsHud(now: number) {
       ? `XR ${s.sessionFrameRate ? `${s.sessionFrameRate} Hz` : ""} · scale 1:${s.playerScale}`
       : "desktop") +
     (tcpHandle ? ` · tcp ${tcp.phase} ×${tcp.changes}` : "") +
+    (ikText && tcpHandle?.grabbed ? ` · ${ikText}` : "") +
     (teach ? ` · wp ${teach.waypoints.length}${teach.playing ? " ▶" : ""}` : "");
   statsEl.textContent = `${line1}\n${line2}\n${line3}`;
   statsLabel.setText(`${line1}\n${line2}\n${line3}`);
@@ -549,6 +629,8 @@ let animate = params.get("anim") !== "0";
 
 renderer.xr.addEventListener("sessionstart", () => {
   controls.enabled = false;
+  tcpControls.enabled = false;
+  tcpControlsHelper.visible = false;
   xrFrames = 0;
   pendingRecenter = true;
   // The stats label rides the left controller; fall back to the second slot.
@@ -556,6 +638,8 @@ renderer.xr.addEventListener("sessionstart", () => {
 });
 renderer.xr.addEventListener("sessionend", () => {
   controls.enabled = true;
+  tcpControls.enabled = true;
+  tcpControlsHelper.visible = true;
   statsLabel.removeFromParent();
   rig.reset();
   for (const { label, dot } of pickers) {
@@ -576,8 +660,11 @@ function renderFrame() {
 
   // Clamp the step so a tab that sat without frames does not leap ahead.
   const delta = Math.min(elapsed / 1000, 0.25);
-  if (teach?.active) {
-    teach.update(delta); // the grab projection or the taught playback
+  tcpHandle?.update(); // follow the link, or the hand / gizmo while held
+  if (tcpHandle?.grabbed) {
+    stepIk(); // the arm chases the handle
+  } else if (teach?.active) {
+    teach.update(delta); // the lever grab or the taught playback
   } else if (robot && timeRange && animate) {
     time += delta * robot.getTimeCodesPerSecond();
     if (time > timeRange.end) time = timeRange.start;
@@ -706,6 +793,12 @@ Object.assign(window as unknown as Record<string, unknown>, {
     get robot() {
       return robot;
     },
+    get tcpHandle() {
+      return tcpHandle;
+    },
+    get ik() {
+      return ik;
+    },
     get emulator() {
       return emulator;
     },
@@ -768,7 +861,17 @@ Object.assign(window as unknown as Record<string, unknown>, {
           ...tcp,
           grabbed: tcpHandle?.grabbed ?? false,
           handleWorld: tcpHandle ? tcpHandle.getWorldPosition(new THREE.Vector3()).toArray() : null,
+          toolWorld: robot && tcpHandle ? robot.getLinkWorldPosition(tcpHandle.link).toArray() : null,
+          reachable: tcpHandle?.status.reachable ?? null,
         },
+        ik: ik
+          ? {
+              dof: ik.dof,
+              joints: ik.jointPaths,
+              tracksOrientation: ik.tracksOrientation,
+              ...(ik.last ?? {}),
+            }
+          : null,
         joints: robot
           ? Object.fromEntries(
               [...robot.getJointObjectsByPath()].map(([path, joint]) => [path, joint.value]),

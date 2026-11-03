@@ -2,15 +2,17 @@
 """Headless WebXR check of `examples/vite-xr-viewer` through the IWER emulator.
 
     python3 scripts/xr-capture.py "http://127.0.0.1:5175/?emulate=1&asset=/factory.usda" out.png \
-        [--frames 4] [--aim right|left] [--select] [--tabletop] [--grab] [--teach] [--size WxH] [--profile DIR] [--timeout 300]
+        [--frames 4] [--aim right|left] [--select] [--tabletop] [--grab] [--teach] [--ik] [--size WxH] [--profile DIR] [--timeout 300]
 
 Steps: wait for the asset (status line) → click three's `VRButton` (IWER's
 `navigator.xr` grants the immersive-vr session) → wait for N rendered XR
 frames → optionally aim an emulated controller at the robot, pull the trigger
-(`--select`), squeeze the left grip (`--tabletop`) or grab the TCP handle with
-the right grip (`--grab`) → read the viewer's
-`report()` (frame stats, head height, robot floor contact, hover/selection)
-and screenshot the stereo canvas. Prints a JSON report; exits 1 on page errors.
+(`--select`), squeeze the left grip (`--tabletop`), grab the TCP handle with
+the right grip (`--grab`), teach a loop by turning a joint (`--teach`) or drag
+the handle around and check that the arm follows it (`--ik`; with `--no-xr`
+the same through the desktop gizmo path) → read the viewer's `report()`
+(frame stats, head height, robot floor contact, hover/selection) and
+screenshot the stereo canvas. Prints a JSON report; exits 1 on page errors.
 
 Needs Playwright (`pip install playwright && playwright install chromium`).
 Software GL (SwiftShader) is fine — an XR frame takes seconds, not milliseconds,
@@ -35,6 +37,12 @@ CHROMIUM_ARGS = [
 ]
 
 
+def _dist(a: list[float] | None, b: list[float] | None) -> float:
+    if not a or not b:
+        return float("nan")
+    return sum((x - y) ** 2 for x, y in zip(a, b)) ** 0.5
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("url")
@@ -45,6 +53,7 @@ def main() -> int:
     parser.add_argument("--tabletop", action="store_true", help="squeeze the left grip (tabletop scale)")
     parser.add_argument("--grab", action="store_true", help="move the right controller onto the TCP handle, squeeze, drag 10 cm, let go")
     parser.add_argument("--teach", action="store_true", help="grab a link to turn its joint, record two waypoints, play the loop, export and re-parse")
+    parser.add_argument("--ik", action="store_true", help="grab the TCP handle, drag it to reachable and unreachable targets, check the arm follows, record a waypoint")
     parser.add_argument("--size", default="1280x720")
     parser.add_argument("--profile", help="persistent browser profile directory (asset cache)")
     parser.add_argument("--no-xr", action="store_true", help="desktop view only: skip entering the XR session")
@@ -97,6 +106,21 @@ def main() -> int:
 
         if args.no_xr:
             time.sleep(2)
+            if args.ik:
+                # The desktop gizmo path, without a mouse: grab the handle with no
+                # source and move its own transform, as TransformControls would.
+                before = page.evaluate("() => window.__xrViewer.report().tcp")
+                # 4 cm sideways: a small move any arm can follow from its rest pose.
+                page.evaluate("() => { const h = window.__xrViewer.tcpHandle; h.grab(); h.position.x += 0.04; }")
+                time.sleep(1.5)
+                during = page.evaluate("() => { const r = window.__xrViewer.report(); return { ...r.tcp, ik: r.ik }; }")
+                page.evaluate("() => window.__xrViewer.tcpHandle.release()")
+                time.sleep(0.5)
+                after = page.evaluate("() => window.__xrViewer.report().tcp")
+                print("desktop ik: tool moved", f"{_dist(before['toolWorld'], during['toolWorld']) * 1000:.1f} mm,",
+                      f"tool→handle {_dist(during['toolWorld'], during['handleWorld']) * 1000:.1f} mm,",
+                      "converged =", during["ik"] and during["ik"].get("converged"),
+                      f"| after release: handle→tool {_dist(after['toolWorld'], after['handleWorld']) * 1000:.1f} mm")
             report = page.evaluate("() => window.__xrViewer.report()")
             page.screenshot(path=args.out)
             closer.close()
@@ -150,6 +174,51 @@ def main() -> int:
             page.evaluate("() => window.__xrViewer.hold('right', 'squeeze', false)")
             settle(2)
             print("after release:", page.evaluate("() => { const t = window.__xrViewer.report().tcp; return { phase: t.phase, grabbed: t.grabbed }; }"))
+
+        if args.ik:
+            ev = page.evaluate
+
+            def tcp_state() -> dict:
+                return ev("() => { const r = window.__xrViewer.report(); return { ...r.tcp, ik: r.ik, joints: r.joints }; }")
+
+            state = tcp_state()
+            ik = state["ik"]
+            print("ik: chain =", [j.split("/")[-1] for j in ik["joints"]] if ik else None,
+                  "· orientation tracked =", ik and ik["tracksOrientation"])
+            at = state["handleWorld"]
+            before = state["joints"]
+            ev("(p) => window.__xrViewer.place('right', p)", at)
+            settle(2)
+            ev("() => window.__xrViewer.hold('right', 'squeeze', true)")
+            settle(2)
+            print("ik: grabbed =", tcp_state()["grabbed"])
+            # Small sideways moves first (any arm follows those from its rest pose;
+            # the sample arm's tool frame sits on its last joint, so it can only move
+            # on a sphere), then sideways + down (a 6+ DOF arm bends for it — the
+            # Franka starts straight up with its elbow at a limit), then one far
+            # beyond the arm, which must come back as unreachable.
+            up = ev("() => window.__xrViewer.report().worldUp")
+            world = (lambda a, b, c: [a, b, c]) if up == "Y" else (lambda a, b, c: [a, c, b])  # (x, up, third)
+            targets = [("4 cm x", (0.04, 0.0, 0.0)), ("4 cm x, 4 cm third", (0.04, 0.0, 0.04)), ("10 cm x, 10 cm down", (0.10, -0.10, 0.0)), ("far", (2.5, 0.0, 0.0))]
+            for name, (a, b, c) in targets:
+                off = world(a, b, c)
+                ev("(p) => window.__xrViewer.place('right', p)", [at[0] + off[0], at[1] + off[1], at[2] + off[2]])
+                settle(4)
+                t = tcp_state()
+                print(f"  {name}: tool→handle {_dist(t['toolWorld'], t['handleWorld']) * 1000:.1f} mm, "
+                      f"converged = {t['ik']['converged']}, posErr = {t['ik']['positionError'] * 1000:.1f} mm, "
+                      f"oriErr = {t['ik']['orientationError']:.3f} rad, reachable = {t['reachable']}")
+            ev("() => window.__xrViewer.hold('right', 'squeeze', false)")
+            settle(2)
+            t = tcp_state()
+            moved = max(abs(t["joints"][k] - before.get(k, 0.0)) for k in t["joints"]) if t["joints"] else 0.0
+            print(f"ik: released: grabbed = {t['grabbed']}, handle→tool {_dist(t['toolWorld'], t['handleWorld']) * 1000:.1f} mm, "
+                  f"reachable = {t['reachable']}, joints moved by up to {moved:.3f} rad")
+            ev("() => window.__xrViewer.hold('right', 'a-button', true)")
+            settle(2)
+            ev("() => window.__xrViewer.hold('right', 'a-button', false)")
+            settle(1)
+            print("ik: waypoints after A =", ev("() => window.__xrViewer.report().teach.waypoints"))
 
         if args.teach:
             ev = page.evaluate

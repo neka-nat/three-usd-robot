@@ -111,10 +111,11 @@ lights (or the fallback rig), HDRI domes as the background.
 | Input | Action |
 | --- | --- |
 | desktop drag | orbit (outside a session) |
+| desktop drag of the TCP gizmo | move the arm by IK (`T` toggles translate / rotate) |
 | point a controller at a link | its name on the controller; the link tints yellow |
 | trigger | select / deselect the link (red) |
 | left grip | toggle the tabletop view (`playerScale`, `?scale=`, default 5) |
-| right grip near the TCP handle | grab the handle (`bindXrGrab`); it follows the hand and snaps back to the link on release — there is no IK in the viewer |
+| right grip near the TCP handle | grab the handle (`bindXrGrab`); the example's demo IK moves the arm after it (red = out of reach); it snaps back onto the link on release |
 | right grip near a link | turn the joint above that link like a lever (green; red at a limit) |
 | right grip elsewhere | teleport to where the ray meets the floor |
 | A / B (right) | record a waypoint (a ghost stays, the tool path grows) / undo the last one |
@@ -131,6 +132,24 @@ closed back to the first pose), so `setTime` plays them and
 the desktop the same actions are `R` / `U` / `P` / `C` / `E` and the panel
 buttons. An asset's own animation pauses while waypoints exist and returns on
 clear. The logic lives in `src/teach.ts`.
+
+**Teaching (stage 2, demo IK).** Holding the TCP handle moves the arm after
+it. The example solves that itself in `src/ik.ts`: damped least squares on
+the geometric Jacobian of the chain from the root to the tool link, a few
+iterations per frame, position first and orientation with a weak weight once
+the chain has six or more joints (`?ik=pos` for position only). Joints stop
+at their authored limits — a joint the step would push past its limit is
+frozen there and the others are solved again, so the arm does not shake
+against a limit — and a stalled folding move leans the limited joints towards
+mid-range to leave a straight-arm singularity (the Franka's all-zero pose is
+one). The handle turns red while the target is out of reach; on release it
+snaps back onto the link wherever the arm got to, and `A` records that pose
+like any other. The tool link is the one a gripper's fingers hang from (the
+lowest common ancestor of the deepest leaves), so finger joints stay out of
+the chain. On the desktop the same runs from the TransformControls gizmo on
+the handle (`T` toggles translate / rotate). This is example code, not a
+library feature: an application brings its own solver and feeds it the
+handle's `change` poses or `getPose("world")`, as this one does.
 
 `?asset=<url>` / `?isaac=<path>` load any asset like the other examples;
 `?up=Z` switches to a Z-up world; `?anim=0` freezes time-sampled animation;
@@ -201,7 +220,9 @@ asset, clicks the VR button, waits for rendered XR frames, then optionally
 aims an emulated controller at the links and pulls the trigger (`--select`),
 squeezes the left grip (`--tabletop`), grabs the TCP handle with the right
 grip (`--grab`), or runs the teaching loop — turns a joint, records two
-waypoints, plays, exports and re-parses the USDA (`--teach`) — and prints the
+waypoints, plays, exports and re-parses the USDA (`--teach`), or drags the
+TCP handle to reachable and unreachable targets and checks that the arm
+follows (`--ik`; with `--no-xr` the same through the desktop gizmo path) — and prints the
 viewer's `report()` (head height, the robot's floor contact, hover /
 selection, the handle's and the teaching session's state, draw calls,
 triangles) and saves a stereo screenshot:
@@ -214,6 +235,7 @@ python3 scripts/xr-capture.py "http://127.0.0.1:5175/?emulate=1&up=Z" zup.png --
 python3 scripts/xr-capture.py "http://127.0.0.1:5175/?emulate=1" tabletop.png --tabletop
 python3 scripts/xr-capture.py "http://127.0.0.1:5175/?emulate=1&asset=/arm_anim.usda" grab.png --grab
 python3 scripts/xr-capture.py "http://127.0.0.1:5175/?emulate=1&asset=/arm_anim.usda&anim=0" teach.png --teach
+python3 scripts/xr-capture.py "http://127.0.0.1:5175/?emulate=1&anim=0" ik.png --ik   # the Franka: 7 joints, orientation too
 ```
 
 Frame times from a software-GL browser say nothing about a headset; draw
