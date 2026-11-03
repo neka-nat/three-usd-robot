@@ -1,6 +1,7 @@
 import GUI from "lil-gui";
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+import { TransformControls } from "three/addons/controls/TransformControls.js";
 import { RectAreaLightUniformsLib } from "three/addons/lights/RectAreaLightUniformsLib.js";
 import { EffectComposer } from "three/addons/postprocessing/EffectComposer.js";
 import { GTAOPass } from "three/addons/postprocessing/GTAOPass.js";
@@ -15,6 +16,7 @@ import {
   writeUsdz,
 } from "three-usd-robot";
 import { createJointSliderPanel } from "three-usd-robot/extras";
+import { type TcpTargetEvent, TcpTargetHandle } from "three-usd-robot/helpers";
 import {
   applyRenderDefaults,
   applyUsdEnvironment,
@@ -226,6 +228,103 @@ let treePanel: UsdTreePanel | undefined;
 const treeEl = document.getElementById("tree") as HTMLElement;
 const inspectorEl = document.getElementById("inspector") as HTMLElement;
 
+// ---------------------------------------------------------------------------
+// TCP target handle — the mouse path of the XR interaction design (M34): a
+// TransformControls drives a `TcpTargetHandle`, whose `change` events carry
+// the target pose an application would hand to its IK. There is no IK here,
+// so the handle follows the live link while idle and snaps back on release.
+// ---------------------------------------------------------------------------
+
+const tcpControls = new TransformControls(camera, renderer.domElement);
+tcpControls.size = 0.6;
+scene.add(tcpControls.getHelper());
+let tcpHandle: TcpTargetHandle | null = null;
+let tcpFolder: GUI | undefined;
+const tcpState = {
+  link: "",
+  mode: "translate" as "translate" | "rotate",
+  lockRotation: false,
+  snap: false,
+  status: "ok" as "ok" | "unreachable" | "colliding",
+  phase: "-",
+  x: 0,
+  y: 0,
+  z: 0,
+};
+tcpControls.addEventListener("dragging-changed", (event) => {
+  controls.enabled = !event.value;
+  if (!tcpHandle) return;
+  if (event.value) tcpHandle.grab();
+  else tcpHandle.release();
+});
+
+function detachTcp() {
+  tcpControls.detach();
+  tcpHandle?.dispose();
+  tcpHandle = null;
+  tcpFolder?.destroy();
+  tcpFolder = undefined;
+}
+
+function applyTcpOptions(handle: TcpTargetHandle) {
+  handle.constraints = {
+    lockRotation: tcpState.lockRotation,
+    ...(tcpState.snap ? { positionSnap: 0.01, angleSnap: Math.PI / 12 } : {}),
+  };
+  handle.setStatus({
+    reachable: tcpState.status !== "unreachable",
+    colliding: tcpState.status === "colliding",
+  });
+}
+
+function buildTcpHandle(next: ThreeUsdRobot, link: string, size: number) {
+  tcpControls.detach();
+  tcpHandle?.dispose();
+  const handle = new TcpTargetHandle(next, link, { size });
+  applyTcpOptions(handle);
+  scene.add(handle);
+  tcpControls.attach(handle);
+  const onEvent = (event: TcpTargetEvent) => {
+    tcpState.phase = event.phase;
+    [tcpState.x, tcpState.y, tcpState.z] = event.pose.position;
+  };
+  handle.addEventListener("grabstart", onEvent);
+  handle.addEventListener("change", onEvent);
+  handle.addEventListener("grabend", onEvent);
+  tcpHandle = handle;
+}
+
+/** Default tool link: the deepest leaf of the kinematic tree. */
+function guessToolLink(next: ThreeUsdRobot): string | null {
+  const leaves = Object.values(next.tree.nodes).filter((n) => n.children.length === 0);
+  leaves.sort((a, b) => b.depth - a.depth);
+  return leaves[0]?.link ?? null;
+}
+
+function setupTcp(next: ThreeUsdRobot) {
+  const links = next.getLinkNames();
+  const tool = guessToolLink(next);
+  if (!tool || links.length === 0) return;
+  const radius = new THREE.Box3().setFromObject(next).getBoundingSphere(new THREE.Sphere()).radius;
+  const size = THREE.MathUtils.clamp(radius * 0.12, 0.03, 0.3);
+  tcpState.link = tool;
+  tcpFolder = gui.addFolder("TCP target");
+  tcpFolder.add(tcpState, "link", links).onChange((link: string) => buildTcpHandle(next, link, size));
+  tcpFolder
+    .add(tcpState, "mode", ["translate", "rotate"])
+    .onChange((mode: "translate" | "rotate") => tcpControls.setMode(mode));
+  const refresh = () => tcpHandle && applyTcpOptions(tcpHandle);
+  tcpFolder.add(tcpState, "lockRotation").onChange(refresh);
+  tcpFolder.add(tcpState, "snap").name("snap 1 cm / 15°").onChange(refresh);
+  tcpFolder.add(tcpState, "status", ["ok", "unreachable", "colliding"]).onChange(refresh);
+  tcpFolder.add(tcpState, "phase").listen().disable();
+  for (const axis of ["x", "y", "z"] as const) {
+    tcpFolder.add(tcpState, axis).decimals(3).listen().disable();
+  }
+  tcpFolder.close();
+  buildTcpHandle(next, tool, size);
+}
+
 const selection = createSelectionGizmo({
   scene,
   camera,
@@ -233,6 +332,7 @@ const selection = createSelectionGizmo({
   orbit: controls,
   getRoot: () => robot,
   resolveUnit: unitForHit,
+  ignoreWhen: () => tcpControls.dragging || tcpControls.axis !== null,
   onPick: (unit, hit) => {
     // Reveal the exact mesh prim when one was hit, else the unit's link prim.
     const path =
@@ -432,6 +532,7 @@ exportFolder.close();
 async function load(url: string) {
   setStatus("loading…");
   tick = undefined;
+  detachTcp();
   selection.select(null);
   treePanel?.dispose();
   treePanel = undefined;
@@ -454,6 +555,7 @@ async function load(url: string) {
     scene.add(next);
     next.showJointAxes = true;
     frame(next);
+    setupTcp(next);
     // Intensity calibration is the loader's job now: `lightIntensityScale`
     // defaults to "auto" (photometric Omniverse stages → ×0.001).
 
@@ -583,6 +685,11 @@ Object.assign(window as unknown as Record<string, unknown>, {
     get gtaoPass() {
       return gtaoPass;
     },
+    get tcpHandle() {
+      return tcpHandle;
+    },
+    tcpControls,
+    tcpState,
     renderOnce() {
       renderer.setAnimationLoop(null);
       renderFrame();

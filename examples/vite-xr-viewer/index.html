@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>three-usd-robot — XR viewer</title>
+    <style>
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+        overflow: hidden;
+        background: #202024;
+        font-family: system-ui, sans-serif;
+        color: #e6e6e6;
+      }
+      #panel {
+        position: fixed;
+        top: 12px;
+        left: 12px;
+        width: 300px;
+        padding: 10px 12px;
+        border-radius: 8px;
+        background: rgba(24, 24, 28, 0.88);
+        font-size: 12px;
+        line-height: 1.5;
+        backdrop-filter: blur(4px);
+      }
+      #panel select {
+        width: 100%;
+        margin: 4px 0 6px;
+      }
+      #panel .row {
+        display: flex;
+        gap: 8px;
+        align-items: center;
+        margin-top: 4px;
+      }
+      #status {
+        color: #cfd6e4;
+      }
+      #stats {
+        margin-top: 6px;
+        font-family: ui-monospace, monospace;
+        font-size: 11px;
+        color: #a8d0a8;
+        white-space: pre;
+      }
+      #hint {
+        position: fixed;
+        left: 12px;
+        bottom: 12px;
+        color: #aaa;
+        font-size: 12px;
+        max-width: 70vw;
+      }
+      #VRButton {
+        /* three's VRButton positions itself; keep it above the HUD. */
+        z-index: 10;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="panel">
+      <div style="font-size: 11px; opacity: 0.6">WebXR viewer · real-scale USD robots & cells</div>
+      <select id="preset"></select>
+      <div id="status">loading…</div>
+      <div class="row">
+        <label><input type="checkbox" id="anim" checked /> animate</label>
+        <label><input type="checkbox" id="grid" checked /> floor grid</label>
+        <label>up <select id="up" style="width: auto"><option>Y</option><option>Z</option></select></label>
+      </div>
+      <div id="stats"></div>
+    </div>
+    <div id="hint">
+      desktop: drag to orbit · headset: point at a link to see its name, trigger to select it,
+      left grip toggles tabletop scale, right grip teleports to where the ray meets the floor
+      · <code>?emulate=1</code> injects the IWER headset emulator
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

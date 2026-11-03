@@ -38,6 +38,8 @@ export type SelectionGizmoOptions = {
   resolveUnit?: (hit: THREE.Object3D, root: THREE.Object3D) => THREE.Object3D | null;
   /** Fired on viewport picks only: the unit and the exact mesh hit. */
   onPick?: (unit: THREE.Object3D | null, hit: THREE.Object3D | null) => void;
+  /** Skip the pick (another gizmo owns the pointer, say). */
+  ignoreWhen?: () => boolean;
 };
 
 export function createSelectionGizmo(options: SelectionGizmoOptions): SelectionGizmo {
@@ -90,6 +92,7 @@ export function createSelectionGizmo(options: SelectionGizmoOptions): SelectionG
     if (event.button !== 0) return;
     if (Math.hypot(event.clientX - downAt.x, event.clientY - downAt.y) > 5) return; // orbit drag
     if (gizmo.dragging || gizmo.axis) return; // interacting with the gizmo itself
+    if (options.ignoreWhen?.()) return;
 
     const root = getRoot();
     if (!root) return;

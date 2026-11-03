@@ -31,6 +31,13 @@ npm run dev
   / `Bounds` (auto-frame). Also accepts `?asset=<url>`.
 - **vite-webgpu-nodes** — MaterialX (`ND_*`) procedural graphs executed as TSL
   node materials on `WebGPURenderer` (`three-usd-robot/nodes`).
+- **vite-xr-viewer** — the **WebXR viewer**: walk around a robot or a cell at
+  real scale in a headset (`VRButton`, controller models, a floor grid at the
+  XR floor). Point a controller at a link to see its name, trigger to select
+  it, left grip for a tabletop view, right grip to teleport. `?up=Z` for a
+  Z-up world, `?emulate=1` for the IWER headset emulator (headless checks via
+  `scripts/xr-capture.py`), `npm run dev:https` for a headset on the LAN. See
+  [docs/xr.md](../docs/xr.md).
 - **vite-webgpu-viewer** — the **RTX-style viewer**: `WebGPURenderer` with a
   TSL post stack (GTAO or SSGI, screen-space reflections, TRAA, bloom, depth
   of field) for interaction, and a progressive **path tracer**

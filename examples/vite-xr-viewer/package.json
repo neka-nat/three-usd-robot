@@ -1,0 +1,22 @@
+{
+  "name": "example-vite-xr-viewer",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "dev:https": "HTTPS=1 vite --host",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "fflate": "^0.8.3",
+    "iwer": "^2.7.0",
+    "three": "^0.186.1"
+  },
+  "devDependencies": {
+    "@types/three": "^0.186.0",
+    "@vitejs/plugin-basic-ssl": "^1.2.0",
+    "typescript": "^5.7.2",
+    "vite": "^5.4.11"
+  }
+}

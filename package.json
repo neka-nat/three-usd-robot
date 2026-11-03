@@ -70,8 +70,8 @@
     "format": "biome format --write .",
     "check": "biome check --write .",
     "demo:factory": "tsx scripts/demo-factory.ts",
-    "demo:install": "npm install --prefix examples/vite-usd-inspector",
-    "demo:build": "npm run demo:factory && npm run build --prefix examples/vite-usd-inspector"
+    "demo:install": "npm install --prefix examples/vite-usd-inspector && npm install --prefix examples/vite-xr-viewer",
+    "demo:build": "npm run demo:factory && npm run build --prefix examples/vite-usd-inspector && NESTED=1 npm run build --prefix examples/vite-xr-viewer"
   },
   "peerDependencies": {
     "@react-three/fiber": ">=8",

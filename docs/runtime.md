@@ -131,6 +131,58 @@ ghost.setJointValues(ikSolution); // a full ThreeUsdRobot, driveable like the so
 Highlights never stack (each call re-tints from the originals), and ghosts
 share the source's geometry — cloning is cheap enough for onion-skinning.
 
+## Picking & TCP target handle
+
+The interaction pieces a viewer needs are input-agnostic, so a mouse raycast
+and an XR controller ray share them. Every mesh the loader binds carries
+`userData.primPath` / `userData.kind`, and links are `LinkObject`s, so a hit
+resolves to its link by walking up the hierarchy:
+
+```ts
+import { pickLink, resolveLink, TcpTargetHandle } from "three-usd-robot/helpers";
+
+const hit = resolveLink(robot, event.object); // R3F / pointer event → { link, primPath, kind } | null
+const pick = pickLink([robotA, robotB], raycaster, { kinds: ["visual"] }); // nearest link along the ray
+pick?.link.primPath; // works with every robot accessor
+```
+
+`pickLink` ignores meshes of other kinds and hidden ones (collision meshes
+load hidden when `loadCollisions` is on, and would otherwise raycast), and is
+blocked by the robots' static scenery (`occludeScenery`, default) and by any
+`occluders` you pass — a link behind a wall is not picked. Static scenery
+belongs to no link, so `resolveLink` returns `null` for it; a ghost's meshes
+resolve against the ghost (`kind: "ghost"`).
+
+`TcpTargetHandle` is the object a user drags to say "put the tool here". It
+only turns that intent into `change` events carrying a `LinkPose` — the
+application feeds the pose to its own IK and drives the robot, the same way
+it would from any other UI — and while nobody holds it, it follows the live
+tool link, so an unreachable target visibly snaps back on release:
+
+```ts
+const handle = new TcpTargetHandle(robot, "tool0", {
+  constraints: { positionSnap: 0.005, angleSnap: Math.PI / 12 }, // robot-frame grid, 15°
+  smoothing: 0.3, // damp hand jitter
+});
+scene.add(handle);
+handle.addEventListener("change", ({ pose, phase }) => solveIk(pose)); // phase: "move" | "set"
+handle.addEventListener("grabend", ({ pose }) => saveTeachPoint(pose));
+handle.setStatus({ reachable: ik.converged }); // red gizmo when false, orange when colliding
+
+transformControls.attach(handle); // mouse: the gizmo moves the handle itself …
+transformControls.addEventListener("dragging-changed", (e) => (e.value ? handle.grab() : handle.release()));
+handle.grab(controllerGrip); // … XR: the handle keeps its offset to the grip
+```
+
+Poses are reported in the scene world (`space: "world"`, default) or in the
+robot's placement without its scale (`"robot"`: metres relative to the base).
+Constraints — `lockPosition` / `lockRotation`, `translateAxes`, position and
+angle snapping — are expressed in the robot frame and apply relative to the
+pose at grab start. The handle updates itself on every render
+(`autoUpdate`); call `update()` yourself at a chosen point of the frame
+instead when that matters (an R3F `useFrame`). `setPose` places it
+programmatically and clears `follow`.
+
 ## Static scene geometry
 
 Loading a whole cell rather than a bare robot? Pass

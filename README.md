@@ -114,6 +114,7 @@ robotics-style Z-up world. Details in the [runtime guide](./docs/runtime.md).
 | [Lighting](./docs/lighting.md) | UsdLux → Three.js lights, DomeLight → IBL environment, shadow & tone-mapping defaults, intensity calibration for Omniverse assets |
 | [Animation & recorded playback](./docs/recorded-playback.md) | Time-sampled trajectories, baked body-transform recordings, constraint diagnostics & joint projection |
 | [Exporting USD](./docs/export.md) | Re-export, `RobotBuilder` authoring, simulation-ready assets (mass / collision / Isaac Robot Schema), USDZ packaging |
+| [WebXR](./docs/xr.md) | Real-scale viewing in a headset: rendering path, XR origin vs. Y-up / Z-up worlds, controller-ray link picking, the IWER emulator for headless checks (PoC) |
 
 ## Export USD
 
@@ -147,6 +148,7 @@ collision setup all serialize — see [Exporting USD](./docs/export.md).
   animation playback and USD export.
 - **`vite-basic-viewer`** — the same thing through React Three Fiber.
 - **`vite-webgpu-nodes`** — MaterialX graph execution (TSL) on `WebGPURenderer`.
+- **`vite-xr-viewer`** — the WebXR viewer: a robot or a whole cell at real scale in a headset, with link picking from the controllers, a tabletop view and teleport; Y-up or Z-up worlds; checkable without a headset through the IWER emulator (see [WebXR](./docs/xr.md)).
 - **`vite-webgpu-viewer`** — the RTX-style viewer: `WebGPURenderer` with a TSL post stack (GTAO / SSGI, SSR, TRAA, bloom, DoF) for interaction and a progressive path tracer (three-gpu-pathtracer) for stills — the two modes mirror Isaac Sim's "RTX – Real-Time" and "RTX – Interactive". Falls back to WebGL 2 without WebGPU (path tracing then stays off).
 
 The viewers take `?asset=<url>` for any asset, or `?isaac=<path under Isaac/>`
@@ -159,7 +161,7 @@ factory cell and builds the deployable site.
 | --- | --- |
 | `three-usd-robot` | Three.js runtime — `ThreeUsdRobotLoader`, `ThreeUsdRobot`, `RobotBuilder`, export helpers |
 | `three-usd-robot/core` | Three.js-independent USD parser & writer, robot IR, forward-kinematics math |
-| `three-usd-robot/helpers` | Viewer helpers (joint axes, link frames, joint limits, highlights, ghosts) |
+| `three-usd-robot/helpers` | Viewer helpers (joint axes, link frames, joint limits, highlights, ghosts) and interaction pieces (link picking, TCP target handle) |
 | `three-usd-robot/extras` | Joint slider panel (bring your own `lil-gui`) |
 | `three-usd-robot/nodes` | Optional MaterialX → TSL execution (`three/webgpu`) — `createMaterialXNodeFactory`, `loadMaterialXDocument` |
 | `three-usd-robot/react` | React Three Fiber `<UsdRobot>` component + hooks |
