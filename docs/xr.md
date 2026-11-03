@@ -115,7 +115,22 @@ lights (or the fallback rig), HDRI domes as the background.
 | trigger | select / deselect the link (red) |
 | left grip | toggle the tabletop view (`playerScale`, `?scale=`, default 5) |
 | right grip near the TCP handle | grab the handle (`bindXrGrab`); it follows the hand and snaps back to the link on release — there is no IK in the viewer |
+| right grip near a link | turn the joint above that link like a lever (green; red at a limit) |
 | right grip elsewhere | teleport to where the ray meets the floor |
+| A / B (right) | record a waypoint (a ghost stays, the tool path grows) / undo the last one |
+| X / Y (left) | play or pause the taught loop / clear the waypoints |
+
+**Teaching (stage 1, no IK).** Grabbing a link turns the first articulated
+joint above it: a revolute joint by the angle the hand sweeps around the joint
+axis, a prismatic one by the travel along it — you move your hand, not your
+wrist. Recorded waypoints are baked into the robot description as joint
+`valueSamples` (0.5–4 s per segment from the largest joint move, the loop
+closed back to the first pose), so `setTime` plays them and
+`exportThreeUsdRobot` writes them as USD `timeSamples`: the `.usda` button
+(or `E`) downloads a file that plays in Isaac Sim or back in this viewer. On
+the desktop the same actions are `R` / `U` / `P` / `C` / `E` and the panel
+buttons. An asset's own animation pauses while waypoints exist and returns on
+clear. The logic lives in `src/teach.ts`.
 
 `?asset=<url>` / `?isaac=<path>` load any asset like the other examples;
 `?up=Z` switches to a Z-up world; `?anim=0` freezes time-sampled animation;
@@ -182,12 +197,14 @@ once; headless Chromium ships a device-less `navigator.xr`, so the runtime is
 installed with `forceInstall`).
 
 `scripts/xr-capture.py` drives the example through Playwright: waits for the
-asset, clicks the VR button, waits for rendered XR frames, optionally aims an
-emulated controller at the links and pulls the trigger, squeezes the left
-grip, or moves the right controller onto the TCP handle and grabs it
-(`--grab`), then prints the viewer's `report()` (head height, the robot's
-floor contact, hover / selection, the handle's state, draw calls, triangles)
-and saves a stereo screenshot:
+asset, clicks the VR button, waits for rendered XR frames, then optionally
+aims an emulated controller at the links and pulls the trigger (`--select`),
+squeezes the left grip (`--tabletop`), grabs the TCP handle with the right
+grip (`--grab`), or runs the teaching loop — turns a joint, records two
+waypoints, plays, exports and re-parses the USDA (`--teach`) — and prints the
+viewer's `report()` (head height, the robot's floor contact, hover /
+selection, the handle's and the teaching session's state, draw calls,
+triangles) and saves a stereo screenshot:
 
 ```sh
 cd examples/vite-xr-viewer && npm run dev -- --port 5175   # in one terminal
@@ -196,6 +213,7 @@ python3 scripts/xr-capture.py "http://127.0.0.1:5175/?emulate=1&asset=/factory.u
 python3 scripts/xr-capture.py "http://127.0.0.1:5175/?emulate=1&up=Z" zup.png --aim right
 python3 scripts/xr-capture.py "http://127.0.0.1:5175/?emulate=1" tabletop.png --tabletop
 python3 scripts/xr-capture.py "http://127.0.0.1:5175/?emulate=1&asset=/arm_anim.usda" grab.png --grab
+python3 scripts/xr-capture.py "http://127.0.0.1:5175/?emulate=1&asset=/arm_anim.usda&anim=0" teach.png --teach
 ```
 
 Frame times from a software-GL browser say nothing about a headset; draw

@@ -60,12 +60,25 @@ export function placeEmulatedController(
   controller.position.set(local.x, local.y, local.z);
 }
 
-/** Hold or let go of an emulated controller button (`trigger` | `squeeze`). */
+/**
+ * Emulated controller buttons (IWER's Touch Plus layout ids). `a-button` /
+ * `b-button` name the upper face buttons of either hand — the left hand's
+ * are `x-button` / `y-button` in the layout and are translated here.
+ */
+export type EmulatedButton = "trigger" | "squeeze" | "a-button" | "b-button" | "thumbstick";
+
+/** Hold or let go of an emulated controller button. */
 export function setEmulatedButton(
   device: Emulator,
   hand: "left" | "right",
-  button: "trigger" | "squeeze",
+  button: EmulatedButton,
   pressed: boolean,
 ): void {
-  device.controllers[hand]?.updateButtonValue(button, pressed ? 1 : 0);
+  const id =
+    hand === "left" && button === "a-button"
+      ? "x-button"
+      : hand === "left" && button === "b-button"
+        ? "y-button"
+        : button;
+  device.controllers[hand]?.updateButtonValue(id, pressed ? 1 : 0);
 }

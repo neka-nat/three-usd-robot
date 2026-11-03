@@ -13,6 +13,10 @@
  *   ?emulate=1                     install the IWER headset emulator (desktop / headless)
  *   ?anim=0                        do not advance time-sampled animation
  *   ?scale=<n>                     tabletop player scale toggled by the left grip (default 5)
+ *
+ * Teaching (src/teach.ts): the right grip near a link turns its joint, A
+ * records a waypoint (ghost + tool path), B undoes, X plays the taught loop,
+ * Y clears; the trajectory exports as USD time samples (panel / `E`).
  */
 
 import * as THREE from "three";
@@ -20,7 +24,12 @@ import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { VRButton } from "three/addons/webxr/VRButton.js";
 import { XRControllerModelFactory } from "three/addons/webxr/XRControllerModelFactory.js";
 import { type ThreeUsdRobot, ThreeUsdRobotLoader } from "three-usd-robot";
-import { highlightLink, restoreAllLinkMaterials, restoreLinkMaterials } from "three-usd-robot/helpers";
+import {
+  getLinkMeshes,
+  highlightLink,
+  restoreAllLinkMaterials,
+  restoreLinkMaterials,
+} from "three-usd-robot/helpers";
 import { applyRenderDefaults, applyUsdEnvironment } from "three-usd-robot/rendering";
 import {
   bindXrGrab,
@@ -31,6 +40,7 @@ import {
   XrRayPicker,
 } from "three-usd-robot/xr";
 import {
+  type EmulatedButton,
   type Emulator,
   aimEmulatedController,
   installEmulator,
@@ -38,6 +48,7 @@ import {
   setEmulatedButton,
 } from "./emulate";
 import { TextLabel } from "./label";
+import { TeachSession } from "./teach";
 
 // ---------------------------------------------------------------------------
 // Parameters
@@ -216,6 +227,19 @@ async function load(url: string) {
     scene.add(next);
     frame(next);
     setupTcpHandle(next, viewpoint.radius);
+    teach?.dispose();
+    teach = tcpHandle
+      ? new TeachSession({
+          scene,
+          robot: next,
+          toolLink: tcpHandle.link,
+          onChange: () => {
+            restyle();
+            updateTeachHud();
+          },
+        })
+      : null;
+    updateTeachHud();
 
     const fallback = next.domeLights.length === 0 && next.lights.length < 2;
     fallbackLights.visible = fallback;
@@ -256,13 +280,18 @@ async function load(url: string) {
 
 const HOVER = { color: 0xffc400, emissiveIntensity: 0.5 } as const;
 const SELECTED = { color: 0xff4444, emissiveIntensity: 0.8 } as const;
+const GRABBED = { color: 0x40ff80, emissiveIntensity: 0.6 } as const;
+const AT_LIMIT = { color: 0xff4040, emissiveIntensity: 0.9 } as const;
 let hovered: string | null = null;
 let selected: string | null = null;
+let teach: TeachSession | null = null;
 
 function restyle() {
   if (!robot) return;
+  const grabbed = teach?.grabbedLink ?? null;
   for (const path of robot.getLinkObjectsByPath().keys()) {
-    if (path === selected) highlightLink(robot, path, SELECTED);
+    if (path === grabbed) highlightLink(robot, path, teach?.limitExceeded ? AT_LIMIT : GRABBED);
+    else if (path === selected) highlightLink(robot, path, SELECTED);
     else if (path === hovered) highlightLink(robot, path, HOVER);
     else restoreLinkMaterials(robot, path);
   }
@@ -381,6 +410,7 @@ for (const { controller } of pickers) {
     } else {
       const grip = rig.grip("right") ?? rig.grips[rig.controllers.indexOf(controller)];
       if (grip && withinReach(grip)) return; // the grab binding takes this squeeze
+      if (grip && teach?.tryGrabLink(grip, GRAB_REACH * rig.playerScale)) return; // turn a joint
       controller.updateMatrixWorld();
       const ray = new THREE.Ray(
         new THREE.Vector3().setFromMatrixPosition(controller.matrixWorld),
@@ -390,6 +420,75 @@ for (const { controller } of pickers) {
       if (point) rig.teleport(point);
     }
   });
+  controller.addEventListener("squeezeend", () => teach?.releaseLink());
+}
+
+// ---------------------------------------------------------------------------
+// Teaching: A records, B undoes (right); X plays, Y clears (left). Buttons
+// are not events in WebXR — poll the gamepads once per frame.
+// ---------------------------------------------------------------------------
+
+const teachEl = document.getElementById("teach") as HTMLSpanElement;
+const teachActions = {
+  record: () => teach?.record(),
+  undo: () => teach?.undo(),
+  play: () => teach?.togglePlay(),
+  clear: () => teach?.clear(),
+  export: () => {
+    if (!teach || !robot) return;
+    download(`${robot.robot.name || "robot"}_taught.usda`, teach.exportUsda(), "text/plain");
+  },
+};
+for (const [name, action] of Object.entries(teachActions)) {
+  document.getElementById(`teach-${name}`)?.addEventListener("click", action);
+}
+window.addEventListener("keydown", (event) => {
+  if (event.target instanceof HTMLInputElement || event.target instanceof HTMLSelectElement) return;
+  const key = event.key.toLowerCase();
+  if (key === "r") teachActions.record();
+  else if (key === "u") teachActions.undo();
+  else if (key === "p") teachActions.play();
+  else if (key === "c") teachActions.clear();
+  else if (key === "e") teachActions.export();
+});
+
+function updateTeachHud() {
+  const playBtn = document.getElementById("teach-play");
+  if (playBtn) playBtn.textContent = teach?.playing ? "pause" : "play";
+  teachEl.textContent = teach
+    ? `${teach.waypoints.length} waypoints${teach.playing ? " · playing" : ""}${teach.grabbedLink ? ` · turning ${teach.grabbedLink.split("/").pop()}` : ""}`
+    : "";
+}
+
+/** xr-standard gamepad: [4] = A / X, [5] = B / Y. Edge-triggered per hand. */
+const BUTTON_ACTIONS: Record<string, Record<number, () => void>> = {
+  right: { 4: teachActions.record, 5: teachActions.undo },
+  left: { 4: teachActions.play, 5: teachActions.clear },
+};
+const buttonsDown = new Map<string, boolean>();
+function pollButtons() {
+  const session = renderer.xr.getSession();
+  if (!session) return;
+  for (const source of session.inputSources) {
+    const actions = BUTTON_ACTIONS[source.handedness];
+    const buttons = source.gamepad?.buttons;
+    if (!actions || !buttons) continue;
+    for (const [index, action] of Object.entries(actions)) {
+      const id = `${source.handedness}:${index}`;
+      const pressed = buttons[Number(index)]?.pressed ?? false;
+      if (pressed && !buttonsDown.get(id)) action();
+      buttonsDown.set(id, pressed);
+    }
+  }
+}
+
+function download(filename: string, data: BlobPart, type: string) {
+  const url = URL.createObjectURL(new Blob([data], { type }));
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  link.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
 // ---------------------------------------------------------------------------
@@ -434,7 +533,9 @@ function updateStatsHud(now: number) {
   const line3 =
     (s.presenting
       ? `XR ${s.sessionFrameRate ? `${s.sessionFrameRate} Hz` : ""} · scale 1:${s.playerScale}`
-      : "desktop") + (tcpHandle ? ` · tcp ${tcp.phase} ×${tcp.changes}` : "");
+      : "desktop") +
+    (tcpHandle ? ` · tcp ${tcp.phase} ×${tcp.changes}` : "") +
+    (teach ? ` · wp ${teach.waypoints.length}${teach.playing ? " ▶" : ""}` : "");
   statsEl.textContent = `${line1}\n${line2}\n${line3}`;
   statsLabel.setText(`${line1}\n${line2}\n${line3}`);
 }
@@ -475,7 +576,9 @@ function renderFrame() {
 
   // Clamp the step so a tab that sat without frames does not leap ahead.
   const delta = Math.min(elapsed / 1000, 0.25);
-  if (robot && timeRange && animate) {
+  if (teach?.active) {
+    teach.update(delta); // the grab projection or the taught playback
+  } else if (robot && timeRange && animate) {
     time += delta * robot.getTimeCodesPerSecond();
     if (time > timeRange.end) time = timeRange.start;
     robot.setTime(time);
@@ -483,6 +586,7 @@ function renderFrame() {
 
   if (renderer.xr.isPresenting) {
     xrFrames++;
+    pollButtons();
     // The XR camera pose lands on `camera` during render, so the first loop
     // iteration still sees the desktop pose: recenter from the second frame on.
     if (pendingRecenter && xrFrames >= 2) {
@@ -571,6 +675,23 @@ async function main() {
   await load(initialUrl);
 }
 
+/** Link table for automated checks: prim path, name, world position, joint above. */
+function linksOf(target: ThreeUsdRobot | null) {
+  if (!target) return [];
+  target.updateMatrixWorld(true);
+  return [...target.getLinkObjectsByPath()].map(([path, link]) => {
+    const box = new THREE.Box3();
+    for (const mesh of getLinkMeshes(target, path, "visual")) box.expandByObject(mesh);
+    return {
+      path,
+      name: link.linkName,
+      position: target.getLinkWorldPosition(path).toArray(),
+      center: box.isEmpty() ? null : box.getCenter(new THREE.Vector3()).toArray(),
+      joint: target.tree.nodes[link.linkName]?.jointToParent ?? null,
+    };
+  });
+}
+
 // Viewer internals for automated tooling (scripts/xr-capture.py).
 Object.assign(window as unknown as Record<string, unknown>, {
   __xrViewer: {
@@ -602,7 +723,7 @@ Object.assign(window as unknown as Record<string, unknown>, {
       if (emulator) aimEmulatedController(emulator, rig, hand, new THREE.Vector3(...target));
     },
     /** Press and release an emulated controller button (`trigger` | `squeeze`). */
-    press(hand: "left" | "right", button: "trigger" | "squeeze") {
+    press(hand: "left" | "right", button: EmulatedButton) {
       const c = emulator?.controllers[hand];
       if (!c) return;
       c.updateButtonValue(button, 1);
@@ -648,6 +769,40 @@ Object.assign(window as unknown as Record<string, unknown>, {
           grabbed: tcpHandle?.grabbed ?? false,
           handleWorld: tcpHandle ? tcpHandle.getWorldPosition(new THREE.Vector3()).toArray() : null,
         },
+        joints: robot
+          ? Object.fromEntries(
+              [...robot.getJointObjectsByPath()].map(([path, joint]) => [path, joint.value]),
+            )
+          : {},
+        links: linksOf(robot),
+        teach: teach
+          ? {
+              waypoints: teach.waypoints.length,
+              playing: teach.playing,
+              grabbing: teach.grabbedLink,
+              limitExceeded: teach.limitExceeded,
+              timeRange: robot?.getTimeRange() ?? null,
+              time,
+            }
+          : null,
+      };
+    },
+    teach: teachActions,
+    /** The taught trajectory as USDA, parsed back through the loader for a self-check. */
+    async verifyTaught() {
+      if (!teach) return null;
+      const usda = teach.exportUsda();
+      const parsed = await new ThreeUsdRobotLoader({ worldUp }).parse(usda);
+      const animated = parsed.getJointNames().filter((n) => parsed.robot.joints[n]?.valueSamples);
+      const range = parsed.getTimeRange();
+      const mid = range ? (range.start + range.end) / 2 : 0;
+      parsed.setTime(mid);
+      return {
+        bytes: usda.length,
+        hasTimeSamples: usda.includes("timeSamples"),
+        animatedJoints: animated,
+        timeRange: range,
+        jointsAtMid: Object.fromEntries(animated.map((n) => [n, parsed.getJointValue(n)])),
       };
     },
     /** Move an emulated controller to a world point (x, y, z), keeping its aim. */
@@ -655,7 +810,7 @@ Object.assign(window as unknown as Record<string, unknown>, {
       if (emulator) placeEmulatedController(emulator, rig, hand, new THREE.Vector3(...point));
     },
     /** Hold (true) or let go (false) of an emulated controller button. */
-    hold(hand: "left" | "right", button: "trigger" | "squeeze", pressed: boolean) {
+    hold(hand: "left" | "right", button: EmulatedButton, pressed: boolean) {
       if (emulator) setEmulatedButton(emulator, hand, button, pressed);
     },
     /** Start an immersive session without the button (for scripts). */

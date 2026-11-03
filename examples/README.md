@@ -35,8 +35,12 @@ npm run dev
   around a robot or a cell at real scale in a headset (`VRButton`, controller
   models, a floor grid at the XR floor). Point a controller at a link to see
   its name, trigger to select it, left grip for a tabletop view, right grip
-  near the TCP handle to grab it (it snaps back on release — no IK here) or
-  elsewhere to teleport. `?up=Z` for a Z-up world, `?emulate=1` for the IWER
+  near the TCP handle to grab it (it snaps back on release — no IK here),
+  near a link to **turn its joint like a lever**, or elsewhere to teleport.
+  **Teaching**: A records a waypoint (a ghost stays behind, the tool path
+  grows), B undoes, X plays the taught loop, Y clears, and the panel exports
+  the trajectory as a `.usda` with `timeSamples` (`R` / `U` / `P` / `C` / `E`
+  on the desktop). `?up=Z` for a Z-up world, `?emulate=1` for the IWER
   headset emulator (headless checks via `scripts/xr-capture.py`). For a
   headset on the LAN: `npm run dev:https`, open the printed `Network:` URL in
   the headset's browser and accept the self-signed certificate once; or
